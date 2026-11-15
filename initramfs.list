@@ -1,0 +1,9 @@
+# The RNS-E 192's initramfs, in the kernel's gen_init_cpio format.
+# INIT is replaced by linux/build.sh with the path of the built /init.
+dir /dev 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+nod /dev/tty1 0600 0 0 c 4 1
+dir /proc 0755 0 0
+dir /sys 0755 0 0
+dir /tmp 1777 0 0
+file /init INIT 0755 0 0

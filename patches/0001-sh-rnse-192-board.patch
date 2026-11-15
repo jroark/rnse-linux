@@ -1,0 +1,84 @@
+diff -ru a/arch/sh/boards/Kconfig b/arch/sh/boards/Kconfig
+--- a/arch/sh/boards/Kconfig	2026-11-15 13:32:29
++++ b/arch/sh/boards/Kconfig	2026-11-15 13:53:32
+@@ -305,6 +305,17 @@
+ 	  Select Titan if you are configuring for a Nimble Microsystems
+ 	  NetEngine NP51R.
+ 
++config SH_RNSE
++	bool "Audi RNS-E 192"
++	depends on CPU_SUBTYPE_SH7750R
++	select CPU_HAS_IPR_IRQ
++	select INPUT
++	help
++	  Select RNS-E if you are configuring for the 192 generation of the
++	  Audi RNS-E navigation unit (SH7750R-like SH-4, 64 MiB SDRAM at
++	  0x0c000000).  The kernel is started from an SD card by the rnse
++	  SDK's linuxboot loader.
++
+ config SH_SHMIN
+ 	bool "SHMIN"
+ 	depends on CPU_SUBTYPE_SH7706
+diff -ru a/arch/sh/boards/Makefile b/arch/sh/boards/Makefile
+--- a/arch/sh/boards/Makefile	2026-11-15 13:32:29
++++ b/arch/sh/boards/Makefile	2026-11-15 13:53:32
+@@ -13,6 +13,7 @@
+ obj-$(CONFIG_SH_ESPT)		+= board-espt.o
+ obj-$(CONFIG_SH_POLARIS)	+= board-polaris.o
+ obj-$(CONFIG_SH_TITAN)		+= board-titan.o
++obj-$(CONFIG_SH_RNSE)		+= board-rnse.o rnse-controls.o
+ obj-$(CONFIG_SH_SH7757LCR)	+= board-sh7757lcr.o
+ obj-$(CONFIG_SH_APSH4A3A)	+= board-apsh4a3a.o
+ obj-$(CONFIG_SH_APSH4AD0A)	+= board-apsh4ad0a.o
+diff -ru a/arch/sh/kernel/cpu/sh4/probe.c b/arch/sh/kernel/cpu/sh4/probe.c
+--- a/arch/sh/kernel/cpu/sh4/probe.c	2026-11-15 13:32:29
++++ b/arch/sh/kernel/cpu/sh4/probe.c	2026-11-15 13:32:29
+@@ -179,6 +179,7 @@
+ 	case 0x500 ... 0x501:
+ 		switch (prr) {
+ 		case 0x10:
++		case 0x20:	/* the Audi RNS-E 192's part (PRR 0x200) */
+ 			boot_cpu_data.type = CPU_SH7750R;
+ 			break;
+ 		case 0x11:
+diff -ru a/arch/sh/tools/mach-types b/arch/sh/tools/mach-types
+--- a/arch/sh/tools/mach-types	2026-11-15 13:32:29
++++ b/arch/sh/tools/mach-types	2026-11-15 13:32:29
+@@ -40,6 +40,7 @@
+ R7780MP			SH_R7780MP
+ R7785RP			SH_R7785RP
+ TITAN			SH_TITAN
++RNSE			SH_RNSE
+ SHMIN			SH_SHMIN
+ LBOXRE2			SH_LBOX_RE2
+ X3PROTO			SH_X3PROTO
+diff -ru a/drivers/video/fbdev/Kconfig b/drivers/video/fbdev/Kconfig
+--- a/drivers/video/fbdev/Kconfig	2026-11-15 13:41:01
++++ b/drivers/video/fbdev/Kconfig	2026-11-15 13:41:07
+@@ -1781,6 +1781,15 @@
+ 	  This driver is deprecated, please use the Hyper-V DRM driver at
+ 	  drivers/gpu/drm/hyperv (CONFIG_DRM_HYPERV) instead.
+ 
++config FB_RNSE_CORAL
++	bool "Audi RNS-E 192 display (Fujitsu MB86293 Coral)"
++	depends on FB=y && SH_RNSE
++	depends on FB_FOREIGN_ENDIAN && (FB_LITTLE_ENDIAN || FB_BOTH_ENDIAN)
++	select FB_IOMEM_HELPERS
++	help
++	  The 400x235 screen of the Audi RNS-E 192, through one layer of its
++	  Coral graphics chip as the rnse SDK sets it up.
++
+ config FB_SIMPLE
+ 	tristate "Simple framebuffer support"
+ 	depends on FB
+diff -ru a/drivers/video/fbdev/Makefile b/drivers/video/fbdev/Makefile
+--- a/drivers/video/fbdev/Makefile	2026-11-15 13:41:01
++++ b/drivers/video/fbdev/Makefile	2026-11-15 13:41:07
+@@ -123,6 +123,7 @@
+ obj-$(CONFIG_FB_OF)               += offb.o
+ obj-$(CONFIG_FB_SSD1307)	  += ssd1307fb.o
+ obj-$(CONFIG_FB_SIMPLE)           += simplefb.o
++obj-$(CONFIG_FB_RNSE_CORAL)       += rnse-coralfb.o
+ 
+ # the test framebuffer is last
+ obj-$(CONFIG_FB_VIRTUAL)          += vfb.o
