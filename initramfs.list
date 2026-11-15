@@ -1,9 +1,18 @@
 # The RNS-E 192's initramfs, in the kernel's gen_init_cpio format.
-# INIT is replaced by linux/build.sh with the path of the built /init.
+# linux/build.sh adds BusyBox, a link for each of its applets, and the
+# files of linux/rootfs/.
+dir /bin 0755 0 0
+dir /sbin 0755 0 0
+dir /usr 0755 0 0
+dir /usr/bin 0755 0 0
+dir /usr/sbin 0755 0 0
+dir /etc 0755 0 0
+dir /etc/init.d 0755 0 0
 dir /dev 0755 0 0
 nod /dev/console 0600 0 0 c 5 1
 nod /dev/tty1 0600 0 0 c 4 1
 dir /proc 0755 0 0
 dir /sys 0755 0 0
 dir /tmp 1777 0 0
-file /init INIT 0755 0 0
+dir /root 0700 0 0
+slink /init /bin/busybox 0777 0 0

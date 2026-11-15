@@ -28,8 +28,15 @@
  *    DMA stopped, caches written back, MMU off, and a call of the SDK's
  *    loader_return in sdk/examples/linuxboot, whose address and stack
  *    linuxboot passes as rnse.return=ADDR,STACK.  Linux leaves that
- *    program and the loader's session alone (board-rnse.c).  A shorter
- *    RETURN is the input device's KEY_BACK, sent when it is let go.
+ *    program and the loader's session alone (board-rnse.c).
+ *  - The other keys and the knobs type, so that a shell can be used
+ *    with nothing but the faceplate ("rotary typing", below).
+ *
+ * Two input devices: "RNS-E rotary keyboard" with what is typed, which
+ * the console's keyboard handler takes, and "RNS-E faceplate" with the
+ * keys as they are (BTN_TRIGGER_HAPPY1 and on, in the order of keymap[]
+ * below, codes the console leaves alone) and the knobs (REL_DIAL the
+ * select knob, REL_MISC the volume knob).
  *
  * Reverse-engineered: docs/hardware.md and docs/linux.md.
  */
@@ -66,13 +73,11 @@ enum {
 	FP_SELECT = 44,
 };
 
-static const struct { u8 bit; u16 code; } keymap[] = {
-	{ FP_INFO, KEY_INFO }, { FP_NAV, KEY_PROG1 }, { FP_TEL, KEY_PHONE },
-	{ FP_NAME, KEY_PROG2 }, { FP_MEDIA, KEY_MEDIA }, { FP_RADIO, KEY_RADIO },
-	{ FP_SOFT_TL, KEY_F1 }, { FP_SOFT_TR, KEY_F2 }, { FP_SOFT_BL, KEY_F3 },
-	{ FP_SOFT_BR, KEY_F4 }, { FP_SETUP, KEY_SETUP }, { FP_CAR, KEY_PROG3 },
-	{ FP_NEXT, KEY_NEXT }, { FP_PREV, KEY_PREVIOUS }, { FP_SELECT, KEY_ENTER },
-	{ FP_DISPLAY, KEY_EJECTCLOSECD }, { FP_CD_EJECT, KEY_EJECTCD },
+/* The raw device's keys: BTN_TRIGGER_HAPPY1 + the index here. */
+static const u8 keymap[] = {
+	FP_INFO, FP_NAV, FP_TEL, FP_NAME, FP_MEDIA, FP_RADIO,
+	FP_SOFT_TL, FP_SOFT_TR, FP_SOFT_BL, FP_SOFT_BR, FP_SETUP, FP_CAR,
+	FP_NEXT, FP_PREV, FP_SELECT, FP_RETURN, FP_DISPLAY, FP_CD_EJECT,
 };
 
 /* What the stock software sends once the controller has started (as
@@ -89,7 +94,8 @@ static const u8 settings[] = {
 };
 
 static void __iomem *uart, *port3, *adc, *ata, *ata_data, *ata_alt;
-static struct input_dev *input;
+static struct input_dev *input, *keyboard;
+static void type_knobs(int select, int volume);
 static unsigned long return_entry, return_stack;
 
 static int __init rnse_return_setup(char *s)
@@ -170,15 +176,18 @@ static void fp_frame(void)
 			fp.keys[i] = d[i];
 		break;
 	case 0x0d:	/* knobs: volume, -, select, -; bit 7 the direction */
-		if (n >= 3 && input) {
+		if (n >= 3) {
 			int vol = d[0] & 0x80 ? -(d[0] & 0x7f) : (d[0] & 0x7f);
 			int sel = d[2] & 0x80 ? (d[2] & 0x7f) : -(d[2] & 0x7f);
 
-			if (vol)
-				input_report_rel(input, REL_MISC, vol);
-			if (sel)
-				input_report_rel(input, REL_DIAL, sel);
-			input_sync(input);
+			if (input) {
+				if (vol)
+					input_report_rel(input, REL_MISC, vol);
+				if (sel)
+					input_report_rel(input, REL_DIAL, sel);
+				input_sync(input);
+			}
+			type_knobs(sel, vol);
 		}
 		break;
 	}
@@ -435,6 +444,206 @@ static void return_to_loader(void)
 	leave(0, return_entry, return_stack);
 }
 
+/* ---- Rotary typing ---------------------------------------------------- *
+ *
+ * The select knob runs through the characters, NEXT and PREV jump from
+ * one group of them to the next (lower case, digits, symbols, upper case),
+ * SELECT keeps the character, and the soft keys are Space, Enter, Tab and
+ * Ctrl-C.  The character being chosen is typed at once and, while it is
+ * being chosen, replaced (Backspace and the next one), so the shell shows
+ * it in place and needs to know nothing of all this.  A short RETURN is
+ * Backspace; the volume knob goes through the shell's history (Up, Down).
+ * EJECT, CD EJECT and RETURN held keep their meaning (above).
+ */
+static const char ring[] =
+	"abcdefghijklmnopqrstuvwxyz"
+	"0123456789"
+	"-./_|>&;=*~$'\"<()[]{}!?#@%+:,\\^`"
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+static const u8 group_start[] = { 0, 26, 36, 69 };
+#define RING_LEN (sizeof(ring) - 1)
+
+static int ring_at;		/* the character chosen, an index of ring[] */
+static int choosing;		/* it has been typed and may still change */
+
+/* US layout: the key of each printable character, and whether it wants
+ * Shift. */
+static const struct { char c; u8 shift; u16 code; } us[] = {
+	{ ' ', 0, KEY_SPACE }, { '-', 0, KEY_MINUS }, { '_', 1, KEY_MINUS },
+	{ '=', 0, KEY_EQUAL }, { '+', 1, KEY_EQUAL }, { '[', 0, KEY_LEFTBRACE },
+	{ '{', 1, KEY_LEFTBRACE }, { ']', 0, KEY_RIGHTBRACE }, { '}', 1, KEY_RIGHTBRACE },
+	{ ';', 0, KEY_SEMICOLON }, { ':', 1, KEY_SEMICOLON }, { '\'', 0, KEY_APOSTROPHE },
+	{ '"', 1, KEY_APOSTROPHE }, { '`', 0, KEY_GRAVE }, { '~', 1, KEY_GRAVE },
+	{ '\\', 0, KEY_BACKSLASH }, { '|', 1, KEY_BACKSLASH }, { ',', 0, KEY_COMMA },
+	{ '<', 1, KEY_COMMA }, { '.', 0, KEY_DOT }, { '>', 1, KEY_DOT },
+	{ '/', 0, KEY_SLASH }, { '?', 1, KEY_SLASH }, { '!', 1, KEY_1 },
+	{ '@', 1, KEY_2 }, { '#', 1, KEY_3 }, { '$', 1, KEY_4 }, { '%', 1, KEY_5 },
+	{ '^', 1, KEY_6 }, { '&', 1, KEY_7 }, { '*', 1, KEY_8 }, { '(', 1, KEY_9 },
+	{ ')', 1, KEY_0 },
+};
+static const u16 letter_keys[26] = {
+	KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I, KEY_J,
+	KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P, KEY_Q, KEY_R, KEY_S, KEY_T,
+	KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z,
+};
+static const u16 digit_keys[10] = {
+	KEY_0, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9,
+};
+
+static void tap(u16 code, u16 modifier)
+{
+	if (!keyboard)
+		return;
+	if (modifier)
+		input_report_key(keyboard, modifier, 1);
+	input_report_key(keyboard, code, 1);
+	input_sync(keyboard);
+	input_report_key(keyboard, code, 0);
+	if (modifier)
+		input_report_key(keyboard, modifier, 0);
+	input_sync(keyboard);
+}
+
+static void type_char(char c)
+{
+	int i;
+
+	if (c >= 'a' && c <= 'z')
+		return tap(letter_keys[c - 'a'], 0);
+	if (c >= 'A' && c <= 'Z')
+		return tap(letter_keys[c - 'A'], KEY_LEFTSHIFT);
+	if (c >= '0' && c <= '9')
+		return tap(digit_keys[c - '0'], 0);
+	for (i = 0; i < ARRAY_SIZE(us); i++)
+		if (us[i].c == c)
+			return tap(us[i].code, us[i].shift ? KEY_LEFTSHIFT : 0);
+}
+
+/* Show ring[ring_at] in the place of the one being chosen, if any. */
+static void choose(void)
+{
+	if (choosing)
+		tap(KEY_BACKSPACE, 0);
+	type_char(ring[ring_at]);
+	choosing = 1;
+}
+
+static void keep(void)
+{
+	choosing = 0;
+}
+
+static void type_knobs(int select, int volume)
+{
+	if (select) {
+		/* The first detent shows where it stands; the rest move. */
+		if (choosing)
+			ring_at += select;
+		else
+			ring_at += select > 0 ? select - 1 : select + 1;
+		ring_at %= (int)RING_LEN;
+		if (ring_at < 0)
+			ring_at += RING_LEN;
+		choose();
+	}
+	for (; volume > 0; volume--) {
+		keep();
+		tap(KEY_UP, 0);
+	}
+	for (; volume < 0; volume++) {
+		keep();
+		tap(KEY_DOWN, 0);
+	}
+}
+
+/* NEXT (1) and PREV (-1): the start of the next or the previous group. */
+static void type_group(int way)
+{
+	int g, n = ARRAY_SIZE(group_start);
+
+	for (g = n - 1; g > 0 && ring_at < group_start[g]; g--)
+		;
+	if (way < 0 && ring_at == group_start[g])
+		g--;
+	else if (way > 0)
+		g++;
+	ring_at = group_start[(g + n) % n];
+	choose();
+}
+
+/* A key of the faceplate pressed, other than EJECT, CD EJECT, RETURN. */
+static void type_key(int bit)
+{
+	switch (bit) {
+	case FP_SELECT:
+		if (choosing)
+			keep();
+		else
+			tap(KEY_ENTER, 0);
+		break;
+	case FP_NEXT:
+		type_group(1);
+		break;
+	case FP_PREV:
+		type_group(-1);
+		break;
+	case FP_SOFT_BL:
+		keep();
+		tap(KEY_SPACE, 0);
+		break;
+	case FP_SOFT_BR:
+		keep();
+		tap(KEY_ENTER, 0);
+		break;
+	case FP_SOFT_TL:
+		keep();
+		tap(KEY_TAB, 0);
+		break;
+	case FP_SOFT_TR:
+		keep();
+		tap(KEY_C, KEY_LEFTCTRL);
+		break;
+	}
+}
+
+/* A short RETURN: Backspace, the character being chosen included. */
+static void type_backspace(void)
+{
+	keep();
+	tap(KEY_BACKSPACE, 0);
+}
+
+static int __init keyboard_register(void)
+{
+	int i;
+
+	keyboard = input_allocate_device();
+	if (!keyboard)
+		return -ENOMEM;
+	keyboard->name = "RNS-E rotary keyboard";
+	keyboard->phys = "rnse/keyboard";
+	keyboard->id.bustype = BUS_HOST;
+	for (i = 0; i < 26; i++)
+		input_set_capability(keyboard, EV_KEY, letter_keys[i]);
+	for (i = 0; i < 10; i++)
+		input_set_capability(keyboard, EV_KEY, digit_keys[i]);
+	for (i = 0; i < ARRAY_SIZE(us); i++)
+		input_set_capability(keyboard, EV_KEY, us[i].code);
+	input_set_capability(keyboard, EV_KEY, KEY_LEFTSHIFT);
+	input_set_capability(keyboard, EV_KEY, KEY_LEFTCTRL);
+	input_set_capability(keyboard, EV_KEY, KEY_BACKSPACE);
+	input_set_capability(keyboard, EV_KEY, KEY_ENTER);
+	input_set_capability(keyboard, EV_KEY, KEY_TAB);
+	input_set_capability(keyboard, EV_KEY, KEY_UP);
+	input_set_capability(keyboard, EV_KEY, KEY_DOWN);
+	if (input_register_device(keyboard)) {
+		input_free_device(keyboard);
+		keyboard = NULL;
+		return -ENODEV;
+	}
+	return 0;
+}
+
 /* ---- The thread ------------------------------------------------------ */
 
 static int controls(void *unused)
@@ -473,35 +682,34 @@ static int controls(void *unused)
 		cd_eject_down = fp_key(FP_CD_EJECT);
 
 		if (!fp_key(FP_RETURN)) {
-			if (return_down == 2 && input) {	/* a short one */
-				input_report_key(input, KEY_BACK, 1);
-				input_sync(input);
-				input_report_key(input, KEY_BACK, 0);
-				input_sync(input);
-			}
+			if (return_down == 2)	/* a short one */
+				type_backspace();
 			return_down = 0;
 		} else if (!return_down) {
 			return_down = 2;
 			return_since = jiffies;
 		} else if (return_down == 2 &&
 			   time_after(jiffies, return_since + msecs_to_jiffies(RETURN_HOLD_MS))) {
-			return_down = 1;	/* used up: no KEY_BACK */
+			return_down = 1;	/* used up: no Backspace */
 			if (in_session())
 				return_to_loader();
 			if (!said++)
 				pr_warn("rnse: return to the SD loader is not available here\n");
 		}
 
-		if (input) {
-			for (i = 0; i < ARRAY_SIZE(keymap); i++) {
-				int b = keymap[i].bit;
-				int now = fp.keys[b >> 3] >> (b & 7) & 1;
+		for (i = 0; i < ARRAY_SIZE(keymap); i++) {
+			int b = keymap[i];
+			int now = fp.keys[b >> 3] >> (b & 7) & 1;
 
-				if (now != (was[b >> 3] >> (b & 7) & 1))
-					input_report_key(input, keymap[i].code, now);
-			}
-			input_sync(input);
+			if (now == (was[b >> 3] >> (b & 7) & 1))
+				continue;
+			if (input)
+				input_report_key(input, BTN_TRIGGER_HAPPY1 + i, now);
+			if (now)
+				type_key(b);
 		}
+		if (input)
+			input_sync(input);
 		memcpy(was, fp.keys, sizeof(was));
 		usleep_range(10000, 11000);
 	}
@@ -535,8 +743,7 @@ static int __init rnse_controls_init(void)
 		input->phys = "rnse/faceplate";
 		input->id.bustype = BUS_HOST;
 		for (i = 0; i < ARRAY_SIZE(keymap); i++)
-			input_set_capability(input, EV_KEY, keymap[i].code);
-		input_set_capability(input, EV_KEY, KEY_BACK);
+			input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY1 + i);
 		input_set_capability(input, EV_REL, REL_DIAL);
 		input_set_capability(input, EV_REL, REL_MISC);
 		if (input_register_device(input)) {
@@ -544,6 +751,9 @@ static int __init rnse_controls_init(void)
 			input = NULL;
 		}
 	}
+
+	if (keyboard_register())
+		pr_warn("rnse: no rotary keyboard\n");
 
 	t = kthread_run(controls, NULL, "rnse-controls");
 	if (IS_ERR(t))

@@ -5,8 +5,10 @@ SH-4, 64 MiB SDRAM), started from an SD card through the same chain as
 any program of the SDK's: the stock software starts `sdboot` from the
 disc, `sdboot` starts `RNSE.BIN` from the card, and here `RNSE.BIN` is
 `sdk/examples/linuxboot`, which reads the kernel, `VMLINUX.BIN`, from the
-same card and enters it.  The root file system is a small initramfs
-built into the kernel; Linux has no driver for the cards themselves.
+same card and enters it.  It comes up to a BusyBox shell on the screen,
+typed on with the faceplate's knob and keys ("Rotary typing").  The root
+file system is an initramfs built into the kernel; Linux has no driver
+for the cards themselves.
 The display folds down and the disc comes out at any time, and RETURN
 held for two seconds goes back to the SD loader (CLAUDE.md, "Mandatory
 hardware behavior"): see "The controls, and the way back".
@@ -28,6 +30,14 @@ on a case-insensitive file system; `RNSE_LINUX_NATIVE=1` builds on a
 Linux host directly.  A build from nothing takes a few minutes, after
 that well under one.  No kernel source is kept in the repository.
 
+User space wants a C library for big-endian SH-4, which Ubuntu does not
+have (its SH-4 one is little-endian).  So the build also makes a
+`sh4eb-linux-musl` toolchain with musl-cross-make (pinned by commit and
+checked; it fetches GCC 13.3.0, binutils 2.44 and musl 1.2.6 itself and
+checks each), once, into the same volume (`linux/toolchain/`; it takes
+a while the first time), and with it a static BusyBox 1.37.0 (pinned,
+checked; `linux/busybox.config` has our changes to its defconfig).
+
 The build stops when the configuration Kconfig ends up with is not the
 one written: an option that is misspelt or not possible is otherwise
 dropped without a word.
@@ -40,7 +50,8 @@ What is ours, besides the configuration:
 | `linux/overlay/arch/sh/boards/rnse-controls.c` | the faceplate's keys and knobs (also an input device), the display's motor, the disc's eject, the way back to the loader |
 | `linux/overlay/drivers/video/fbdev/rnse-coralfb.c` | the screen: one layer of the MB86293, 400x235 at 8 bits through its palette |
 | `linux/patches/0001-sh-rnse-192-board.patch` | Kconfig and Makefile entries for the two, the board's machine type, and the processor's revision (below) |
-| `linux/init/init.c`, `linux/initramfs.list` | `/init`, built with the kernel's own nolibc |
+| `linux/initramfs.list`, `linux/rootfs/` | the initramfs: BusyBox's init as `/init`, `/etc/inittab` (a shell on the screen, `tty1`, and one on the serial port), `/etc/init.d/rcS`, `/etc/profile` |
+| `linux/toolchain/`, `linux/busybox.config` | the user-space toolchain and BusyBox's configuration |
 | `sdk/examples/linuxboot` | the second stage on the card |
 
 ## Running it
@@ -65,15 +76,19 @@ end-to-end test:
         cargo test --release --test disc linux_boots_from_an_sd_card
 
 It runs with the caches modelled and RAM full of arbitrary data, and
-checks the kernel's messages, `/init`, the screen, the watchdog's strobe,
+checks the kernel's messages, BusyBox's start, a command typed on the
+screen's shell with the knob, the screen, the watchdog's strobe,
 the controls while the card is read and under Linux, the way back, and
 that nothing was fetched stale or written back lost.
 
 On a unit: `RNSE.BIN` and `VMLINUX.BIN` on a FAT card as for any program
 from a card ("Programs from an SD card" in
 [custom-firmware.md](custom-firmware.md)), the card in before the
-`sdboot` disc.  At the card processor's pace (293 KB/s measured through
-the stock program) the 2.5 MB take some 8.5 s to read.
+`sdboot` disc.  `VMLINUX.BIN` is 3.1 MB, the kernel with BusyBox in an
+xz-compressed initramfs; at the card processor's pace (293 KB/s measured
+through the stock program) that is some 11 s to read (6 s in the
+emulator).  The kernel then takes about 1.2 s to unpack the initramfs
+(interrupts open, the watchdog served) and the shell is there.
 
 ## The hand-over
 
@@ -96,7 +111,7 @@ still be in the instruction cache.
 The memory is Linux's afterwards, 64 MiB from 0x0c000000, except what
 the way back needs: `sdboot`'s session and copy (0x0c7c0000, 256 KiB)
 and `linuxboot` itself (0x0df00000, 128 KiB), which the board code
-reserves.  The kernel takes 3 MiB and leaves 59 MiB free at `/init`.
+reserves.
 
 ## The controls, and the way back
 
@@ -128,14 +143,37 @@ space:
   calls `linuxboot`'s `loader_return` on `linuxboot`'s stack, which
   puts `sdboot` back and starts it.  `sdboot` shows "TEST RETURNED: 0"
   and waits; it does not start Linux again until the card goes in
-  anew or RETURN is pressed again.  A shorter RETURN goes to user space
-  as `KEY_BACK` when it is let go; a long one sends nothing.  Started
+  anew or RETURN is pressed again.  A shorter RETURN is Backspace
+  (below), sent when it is let go; a long one sends nothing.  Started
   any other way, the kernel says that the way back is not available
   and carries on.
 
-The keys and knobs are also an input device ("RNS-E faceplate",
-`/dev/input/event0`): the soft keys as F1-F4, SELECT as Enter, the
-select knob as `REL_DIAL` and the volume knob as `REL_MISC`.
+## Rotary typing
+
+The faceplate has no keyboard, so the kernel's controls driver types
+with what it has.  The select knob runs through a ring of characters,
+and the character it stands on is typed at once and, while the knob
+turns, replaced (Backspace and the next one), so the shell shows it in
+place and needs to know nothing of this:
+
+| control | does |
+|---------|------|
+| select knob | the next or the previous character; the first detent after a kept one types the character the ring stands on (the last one kept, `a` at first) |
+| pressing it (SELECT) | keeps the character; with none being chosen, Enter |
+| NEXT, PREV | the start of the next or the previous group: `a`-`z`, `0`-`9`, the symbols ``-./_\|>&;=*~$'"<()[]{}!?#@%+:,\^` ``, `A`-`Z` |
+| RETURN (short) | Backspace |
+| soft keys | top left Tab, top right Ctrl-C, bottom left Space, bottom right Enter |
+| volume knob | Up and Down, the shell's history |
+| EJECT, CD EJECT, RETURN held | as above: the display, the disc, the way back |
+
+The typed keys come from an input device of their own, "RNS-E rotary
+keyboard", which the console's keyboard handler takes as it would a
+keyboard (US layout).  The keys as they are, for programs of one's own,
+are another, "RNS-E faceplate": `BTN_TRIGGER_HAPPY1` and on in the order
+of `keymap[]` in `rnse-controls.c` (INFO, NAV, TEL, NAME, MEDIA, RADIO,
+the four soft keys, SETUP, CAR, NEXT, PREV, SELECT, RETURN, EJECT, CD
+EJECT), codes the console leaves alone, and the knobs as `REL_DIAL`
+(select) and `REL_MISC` (volume).
 
 ## What the 192 wanted of Linux
 
@@ -186,7 +224,8 @@ select knob as `REL_DIAL` and the volume knob as `REL_MISC`.
 Seen in the emulator: from the stock software's start through `sdboot`
 and `linuxboot` to the kernel, which finds an SH7750R with its caches,
 64 MiB, its timers and serial ports, puts its console on the screen,
-runs `/init` and counts uptime, with the watchdog served throughout;
+starts BusyBox, and runs a command typed with the knob, with the
+watchdog served throughout;
 the display folds down and up, the disc comes out, and RETURN held
 brings `sdboot` back.  This was seen at one instruction a cycle
 (`--cpu-ratio 4`) and in the test also with the caches modelled.
@@ -210,6 +249,4 @@ Not seen on a unit yet.  What the emulator cannot vouch for there:
 
 Not done: CAN, sound (radio processor and
 card processors), the cards themselves, the companion chip's interrupts,
-a user space beyond `/init` (Ubuntu's SH-4 C library is little-endian,
-so BusyBox would need a big-endian toolchain such as Buildroot's), and
-a compressed kernel to cut the card's 8.5 s.
+and a compressed kernel to cut the time the card is read further.

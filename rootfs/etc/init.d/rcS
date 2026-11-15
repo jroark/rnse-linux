@@ -1,0 +1,13 @@
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mount -t tmpfs tmpfs /tmp
+hostname rnse
+echo "rnse: Linux on the RNS-E 192, BusyBox shell" | tee /dev/tty1
+cat <<'HELP' >/dev/tty1
+Knob: pick a character; press it: keep it.
+NEXT/PREV: a-z 0-9 symbols A-Z. RETURN: delete.
+Soft keys: Tab, Ctrl-C (top), Space, Enter.
+Volume knob: history.  Hold RETURN: the loader.
+HELP

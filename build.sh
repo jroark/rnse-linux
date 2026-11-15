@@ -3,7 +3,7 @@
 #
 # The result is linux/out/VMLINUX.BIN, the kernel's image from its zero
 # page on (to be loaded at 0x8c001000 and entered at 0x8c002000) with a
-# small initramfs built in, and linux/out/vmlinux, the same as an ELF
+# BusyBox initramfs built in, and linux/out/vmlinux, the same as an ELF
 # file for `rnse boot --gdb`.  sdk/examples/linuxboot, copied to an SD
 # card as RNSE.BIN beside VMLINUX.BIN, loads and starts it: see
 # docs/linux.md.
@@ -12,7 +12,9 @@
 # SHA-256) and never kept in the repository.  The build runs in a
 # container (the Dockerfile here) with the source in a Docker volume,
 # because the kernel's tree does not unpack on a case-insensitive file
-# system; set RNSE_LINUX_NATIVE=1 to build directly on a Linux host that
+# system: one volume for each checkout (named from its path, so that two
+# checkouts building at once do not build into each other's tree), and
+# one for the user-space toolchain, which they share; set RNSE_LINUX_NATIVE=1 to build directly on a Linux host that
 # has sh4-linux-gnu-gcc, make, flex, bison and bc.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -29,17 +31,22 @@ if [ -z "$RNSE_LINUX_INSIDE" ] && [ -z "$RNSE_LINUX_NATIVE" ]; then
     fi
     docker image inspect rnse-sh4-kernel >/dev/null 2>&1 ||
         docker build -t rnse-sh4-kernel "$here"
+    volume=rnse-linux-build-$(printf %s "$here" | shasum -a 256 2>/dev/null | cut -c1-12)
+    [ "$volume" = rnse-linux-build- ] &&
+        volume=rnse-linux-build-$(printf %s "$here" | sha256sum | cut -c1-12)
     exec docker run --rm -e RNSE_LINUX_INSIDE=1 -e JOBS \
-        -v rnse-linux-build:/build -v "$here":/rnse-linux \
+        -v "$volume":/build -v rnse-sh4eb-toolchain:/toolchain -v "$here":/rnse-linux \
         rnse-sh4-kernel sh /rnse-linux/build.sh "$@"
 fi
 
 if [ -n "$RNSE_LINUX_INSIDE" ]; then
     src=/rnse-linux
     work=/build
+    toolchain=/toolchain/sh4eb-linux-musl
 else
     src=$here
     work=$here/work/native
+    toolchain=$work/toolchain
 fi
 out=$src/out
 tarball=$src/work/linux-$version.tar.xz
@@ -86,25 +93,50 @@ if [ -s "$work/build/not-taken" ]; then
     exit 1
 fi
 
-# The kernel's user-space headers, for nolibc.
-make_k headers_install INSTALL_HDR_PATH="$work/headers" >/dev/null
+# A big-endian SH-4 toolchain with musl, for BusyBox (once; a while).
+RNSE_DL=$src/work/dl sh "$src/toolchain/build.sh" "$toolchain"
+export PATH="$toolchain/bin:$PATH"
 
-# /init, with the kernel's nolibc.
-mkdir -p "$work/init"
-# (Compiled and linked apart: the driver's -mb asks the linker for an
-# emulation Ubuntu's binutils lacks, while `ld -EB` works.)
-sh4-linux-gnu-gcc -c -mb -m4 -Os -ffreestanding -fno-builtin \
-    -fno-asynchronous-unwind-tables -fno-stack-protector -Wall -nostdinc \
-    -isystem "$(sh4-linux-gnu-gcc -print-file-name=include)" -I "$work/headers/include" \
-    -include "$tree/tools/include/nolibc/nolibc.h" -I "$tree/tools/include/nolibc" \
-    -o "$work/init/init.o" "$src/init/init.c"
-sh4-linux-gnu-ld -EB -static -e _start -o "$work/init/init" "$work/init/init.o"
-if sh4-linux-gnu-nm "$work/init/init" | grep -q ' U '; then
-    echo "init: undefined symbols:" >&2
-    sh4-linux-gnu-nm "$work/init/init" | grep ' U ' >&2
+# BusyBox: its defconfig with our changes, static.
+bb_version=1.37.0
+bb_sha256=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
+bb_tarball=$src/work/dl/busybox-$bb_version.tar.bz2
+[ -f "$bb_tarball" ] || curl -fsSL -o "$bb_tarball" "https://busybox.net/downloads/busybox-$bb_version.tar.bz2"
+echo "$bb_sha256  $bb_tarball" | sha256sum -c - >/dev/null || {
+    echo "busybox-$bb_version.tar.bz2: wrong SHA-256" >&2
     exit 1
+}
+bb=$work/busybox-$bb_version
+bb_stamp=$(cat "$src/busybox.config" | sha256sum | cut -c1-16)
+if [ ! -f "$bb/.rnse-$bb_stamp" ]; then
+    rm -rf "$bb"
+    tar -xjf "$bb_tarball" -C "$work"
+    make -C "$bb" -s defconfig
+    grep -E '^(# )?CONFIG_' "$src/busybox.config" | while read -r line; do
+        name=$(echo "$line" | sed -E 's/^# //; s/[= ].*//')
+        sed -i "/^# $name is not set\$/d; /^$name=/d" "$bb/.config"
+        echo "$line" >> "$bb/.config"
+    done
+    yes "" | make -C "$bb" -s oldconfig >/dev/null
+    touch "$bb/.rnse-$bb_stamp"
 fi
-sed "s|INIT|$work/init/init|" "$src/initramfs.list" > "$work/init/initramfs.list"
+make -C "$bb" -s -j"${JOBS:-$(nproc)}"
+make -C "$bb" -s busybox.links
+file "$bb/busybox" | grep -q 'MSB.*SH' || { echo "busybox is not big-endian SH" >&2; exit 1; }
+
+# The initramfs: our list, BusyBox and its links, linux/rootfs.
+mkdir -p "$work/init"
+list=$work/init/initramfs.list
+cp "$src/initramfs.list" "$list"
+echo "file /bin/busybox $bb/busybox 0755 0 0" >> "$list"
+grep -v '^/bin/busybox$' "$bb/busybox.links" | sort -u | while read -r link; do
+    echo "slink $link /bin/busybox 0777 0 0"
+done >> "$list"
+(cd "$src/rootfs" && find . -type f | sort) | while read -r f; do
+    mode=0644
+    [ -x "$src/rootfs/$f" ] && mode=0755
+    echo "file ${f#.} $src/rootfs/$f $mode 0 0"
+done >> "$list"
 
 make_k vmlinux
 sh4-linux-gnu-objcopy -O binary -R .note -R .comment -S "$work/build/vmlinux" "$out/VMLINUX.BIN"
