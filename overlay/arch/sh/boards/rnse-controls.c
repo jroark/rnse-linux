@@ -17,9 +17,10 @@
  *  - EJECT (the faceplate's key, bit 13) folds the display down or up:
  *    port 3 at 0x12600001, bit 3 runs the motor towards open and bit 4
  *    towards closed, input bit 2 is low only when it is fully open, and
- *    A/D input 3 (0x07d00000) gives the position (at least 894 closed).
- *    The motor stops at the end, when the position stands still for
- *    400 ms, or after 4 s.
+ *    A/D input 3 (0x07d00000) gives the position (at most 94 open, at
+ *    least 894 closed).  As in the SDK (sdk/src/display.c) and the stock
+ *    software, the motor stops when the position has stood still for
+ *    300 ms, and after 8 s whatever happens.
  *  - CD EJECT (bit 31, behind the display) sends the drive START STOP
  *    UNIT with LoEj by programmed I/O (0x07800000), folding the display
  *    down first if it is not.
@@ -262,7 +263,7 @@ static u16 display_position(void)
 
 static int display_open(void)
 {
-	return !(__raw_readb(port3) & 0x04);
+	return !(__raw_readb(port3) & 0x04) || display_position() <= 94;
 }
 
 static void motor_stop(void)
@@ -293,10 +294,8 @@ static void motor_step(void)
 		moved_from = pos;
 		moved_at = now;
 	}
-	if ((motor == OPENING && display_open()) ||
-	    (motor == CLOSING && pos >= 894) ||
-	    time_after(now, moved_at + msecs_to_jiffies(400)) ||
-	    time_after(now, motor_since + msecs_to_jiffies(4000)))
+	if (time_after(now, moved_at + msecs_to_jiffies(300)) ||
+	    time_after(now, motor_since + msecs_to_jiffies(8000)))
 		motor_stop();
 }
 

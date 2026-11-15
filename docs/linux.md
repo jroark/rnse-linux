@@ -114,12 +114,13 @@ space:
   it its settings again should it announce itself anew;
 - EJECT (the faceplate's key, the SDK's `KEY_DISPLAY`) runs the display's
   motor towards open or closed (port 3: bit 3 open, bit 4 closed), and
-  stops it at the end (the switch on port 3 bit 2 low when open, A/D
-  input 3 at least 894 when closed), when the position has stood still
-  for 400 ms, or after 4 s; EJECT while it runs stops it;
+  stops it as the SDK's `sdk/src/display.c` and the stock software do:
+  once the position (A/D input 3) has stood still for 300 ms, and after
+  8 s in any case; EJECT while it runs stops it.  `linuxboot` uses the
+  SDK's own (`panel_service`);
 - CD EJECT (behind the display) sends the drive START STOP UNIT with
   LoEj, as `sdk/examples/base` does, after folding the display down if
-  it is not;
+  it is not (open: at most 94, or the switch on port 3 bit 2 low);
 - RETURN held for 2 s returns to `sdboot`: the kernel stops its timers
   (both units), DMA and every interrupt source, writes the caches back,
   and from an uncached address purges the operand cache over all of
@@ -199,8 +200,8 @@ Not seen on a unit yet.  What the emulator cannot vouch for there:
   emulator's pace;
 - the controls' timing against a real faceplate controller, motor and
   drive: the emulator's motor sweeps in 1.5 s and its drive ejects at
-  once; the unit's may take longer, and the 4 s and 400 ms limits are
-  guesses;
+  once; the unit's may take longer (`sdk/examples/suite`, test 19, times
+  the motor);
 - the way back on real caches: the emulator's cache model is
   direct-mapped, the SH7750R's two-way;
 - anything of the SH-4 that the stock software never used and the

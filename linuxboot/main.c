@@ -15,10 +15,10 @@
  * under Linux, or here while the card is read, goes back to sdboot.
  *
  * The controls work all the while (CLAUDE.md, "Mandatory hardware
- * behavior"): the faceplate's EJECT key folds the display down and up,
- * the CD eject key behind it pushes the disc out (folding the display
- * down first if need be), here from sd_idle while the card is read and
- * under Linux from the kernel's own driver (arch/sh/boards/rnse-controls.c).
+ * behavior"): the faceplate's EJECT key folds the display down and up and
+ * the CD eject key behind it pushes the disc out, here through the SDK's
+ * panel_service (from sd_idle while the card is read) and under Linux
+ * through the kernel's own driver (arch/sh/boards/rnse-controls.c).
  *
  * Should the kernel not be there, it says so and returns to sdboot.  See
  * docs/linux.md. */
@@ -33,15 +33,12 @@
 #define SESSION ((volatile u32 *)0xac7c0000)
 #define SESSION_MAGIC 0x53444c31u
 
-#define PORT3 0xb2600001 /* bit 3: motor to open, 4: to close; 2: in, low when open */
-#define ADC 0xa7d00000   /* the companion chip's converter; input 3 the display */
 #define RETURN_HOLD_MS 2000
 
 void irq_disable(void);
 void linux_enter(u32 entry);
 extern const char _stack_top[];
 
-static const u8 eject_command[12] = { 0x1b, 1, 0, 0, 2 };
 static int s, row;
 
 static void say(const char *text, u8 colour)
@@ -86,105 +83,14 @@ static int in_session(void)
            SESSION[2] == 0x8df00000u && SESSION[3] < 2 && SESSION[4] == 1;
 }
 
-/* ---- The display and the disc ------------------------------------- */
-
-enum { STILL, OPENING, CLOSING };
-static int motor = STILL, eject_pending;
-static u32 motor_since, moved_at;
-static u16 moved_from;
-
-static u16 display_position(void)
-{
-    int i;
-    u16 v;
-    REG16(ADC + 8) = 0x2003; /* start: inputs 0 to 3 */
-    for (i = 0; i < 10000 && !(REG16(ADC + 8) & 0x8000); i++)
-        ;
-    v = REG16(ADC + 6) >> 6;
-    REG16(ADC + 8) = 0;
-    return v;
-}
-
-static int display_open(void)
-{
-    return !(REG8(PORT3) & 0x04);
-}
-
-static void motor_stop(void)
-{
-    REG8(PORT3) &= (u8)~0x18;
-    motor = STILL;
-}
-
-static void motor_run(int way)
-{
-    REG8(PORT3) = (u8)((REG8(PORT3) & ~0x18) | (way == OPENING ? 0x08 : 0x10));
-    motor = way;
-    motor_since = moved_at = millis();
-    moved_from = display_position();
-    console_puts(way == OPENING ? "display: opening from " : "display: closing from ");
-    console_dec(moved_from);
-    console_puts("\n");
-}
-
-/* Stop at the end, when the position stands still for 400 ms (a hand in
- * the way, the end stop) or after four seconds whatever happens. */
-static void motor_step(void)
-{
-    u32 now = millis();
-    u16 pos;
-    int d;
-    if (motor == STILL)
-        return;
-    pos = display_position();
-    d = (int)pos - (int)moved_from;
-    if (d > 8 || d < -8) {
-        moved_from = pos;
-        moved_at = now;
-    }
-    if ((motor == OPENING && display_open()) || (motor == CLOSING && pos >= 894) ||
-        now - moved_at > 400 || now - motor_since > 4000)
-        motor_stop();
-}
-
-static void eject(void)
-{
-    int r = cd_command(eject_command, 0, 0);
-    if (r > 0)
-        r = cd_command(eject_command, 0, 0); /* a "disc changed" first */
-    console_puts(r ? "eject: the drive refused\n" : "eject\n");
-}
-
 /* ---- The faceplate, polled from sd_idle and while waiting ---------- */
 
-static int display_down, cd_eject_down, return_down = 1;
+static int return_down = 1;
 static u32 return_since;
 
 static void controls(void)
 {
-    panel_poll();
-    motor_step();
-    if (eject_pending && motor == STILL) {
-        eject_pending = 0;
-        if (display_open())
-            eject();
-    }
-    if (panel_key(KEY_DISPLAY) && !display_down) {
-        if (motor != STILL)
-            motor_stop();
-        else
-            motor_run(display_position() < 500 ? CLOSING : OPENING);
-    }
-    display_down = panel_key(KEY_DISPLAY);
-    if (panel_key(KEY_CD_EJECT) && !cd_eject_down) {
-        if (display_open()) {
-            eject();
-        } else {
-            eject_pending = 1;
-            motor_run(OPENING);
-        }
-    }
-    cd_eject_down = panel_key(KEY_CD_EJECT);
+    panel_service(); /* the faceplate, the display key, CD EJECT */
     /* RETURN held: back to sdboot.  A RETURN still down from sdboot
      * (which reruns a program on it) has to be let go first. */
     if (!panel_key(KEY_RETURN)) {
@@ -194,7 +100,6 @@ static void controls(void)
         return_since = millis();
     } else if (return_since && millis() - return_since >= RETURN_HOLD_MS) {
         return_since = 0;
-        motor_stop();
         loader_return(0);
         row = 7;
         say("RETURN TO THE LOADER UNAVAILABLE", 2);
@@ -246,6 +151,7 @@ int main(void)
      * settings again (docs/custom-firmware.md, "Programs from an SD card"). */
     panel_attach();
     sd_idle = controls;
+    display_idle = controls;
 
     t0 = millis();
     say("READING VMLINUX.BIN", 1);
@@ -265,7 +171,6 @@ int main(void)
         number("NO KERNEL, ERROR", (u32)-r);
         say("VMLINUX.BIN MISSING OR TOO LONG", 2);
         wait_ms(3000);
-        motor_stop();
         loader_return(r ? r : -30);
         say("RETURN TO THE LOADER UNAVAILABLE", 2);
         for (;;)
@@ -276,8 +181,10 @@ int main(void)
     number("MS", millis() - t0);
     say("STARTING LINUX", 2);
     wait_ms(300);
-    while (motor != STILL)
-        wait_ms(10);
+    /* Linux takes the motor over from a standstill. */
+    if (display_state() == DISPLAY_OPENING || display_state() == DISPLAY_CLOSING)
+        display_wait(9000);
+    display_halt();
 
     /* The way back, for the kernel: its command line in the zero page
      * (the kernel appends its own, CONFIG_CMDLINE_EXTEND). */
