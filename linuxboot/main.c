@@ -6,7 +6,7 @@
  * its zero page, and enters the kernel at 0x8c002000 (_stext) with
  * interrupts masked, timers and DMA stopped, the companion chip's
  * interrupt sources masked, the operand cache written back over the image
- * and the instruction cache invalidated.
+ * and the instruction cache invalidated (image_enter, sdk/src/enter.c).
  *
  * The way back: the kernel keeps its hands off sdboot's saved copy and
  * session (0x8c7c0000-0x8c800000) and off this program (0x8df00000, 128
@@ -50,8 +50,6 @@
 #define FLASH_KERNEL_HEADER 0xa0210100u
 #define FLASH_KERNEL 0xa0210200u
 
-void irq_disable(void);
-void linux_enter(u32 entry);
 extern const char _stack_top[];
 
 static int s, row;
@@ -249,7 +247,7 @@ static int load(int slot, u32 *size)
 int main(void)
 {
     u32 size = 0, a, t0, end;
-    int slot = started_from(), r = -2, i, flash = firmware_installed();
+    int slot = started_from(), r = -2, flash = firmware_installed();
 
     board_init();
     console_puts(flash ? "\nrnse sdk: linuxboot from flash\n" : "\nrnse sdk: linuxboot\n");
@@ -344,47 +342,11 @@ int main(void)
         *p = 0;
     }
 
-    irq_disable();
-    /* Timers, every DMA channel, the on-chip and companion interrupt
-     * sources: as loader_return stops them, so that nothing goes on
-     * writing memory or asking for interrupts under the kernel. */
-    REG8(0xffd80004) = 0;
-    REG16(0xffd80010) = 0;
-    for (i = 0; i < 8; i++)
-        REG32(0xffa0000c + (i < 4 ? i : i + 1) * 0x10) = 0;
-    REG32(0xffa00040) = 0;
-    REG16(0xffd00004) = 0;
-    REG16(0xffd00008) = 0;
-    REG16(0xffd0000c) = 0;
-    for (i = 0; i <= 0x14; i += 2)
-        REG16(0xa7b00000 + i) = 0;
-    REG16(0xa7b0001e) = 0;
     /* The kernel's bytes from the operand cache to memory, the image and
      * the room for its bss (the kernel clears that through the cache). */
-    for (a = KERNEL_LOAD; a < end + 0x80000 && a < KERNEL_LOAD + KERNEL_ROOM; a += 32)
-        __asm__ volatile ("ocbp @%0" : : "r"(a) : "memory");
-    REG8(0xb2300001) ^= 1; /* the watchdog, once more */
-    /* Run the last step uncached: it changes the cache's control. */
-    ((void (*)(u32))(((u32)linux_enter & 0x1fffffff) | 0xa0000000))(KERNEL_ENTRY);
+    a = end + 0x80000;
+    if (a > KERNEL_LOAD + KERNEL_ROOM)
+        a = KERNEL_LOAD + KERNEL_ROOM;
+    image_enter(KERNEL_ENTRY, KERNEL_LOAD, a);
     return -31;
 }
-
-/* Invalidate the instruction cache (CCR.ICI; from an uncached address, and
- * eight instructions before a branch to cached code, as the SH-4 manual
- * wants) and jump into the kernel.  r4 = entry. */
-__asm__(
-    "    .text\n"
-    "    .align 2\n"
-    "    .global linux_enter\n"
-    "linux_enter:\n"
-    "    mov.l 1f, r1\n"
-    "    mov.l @r1, r0\n"
-    "    mov.l 2f, r2\n"
-    "    or r2, r0\n"
-    "    mov.l r0, @r1\n"
-    "    nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n"
-    "    jmp @r4\n"
-    "    nop\n"
-    "    .align 2\n"
-    "1:  .long 0xff00001c\n"
-    "2:  .long 0x00000800\n");
