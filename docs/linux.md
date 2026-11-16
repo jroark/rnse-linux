@@ -251,7 +251,14 @@ install through the stock software and its loader, the ROM starting
 `linuxboot`, the kernel from the flash, the GUI, the start counted as
 healthy 12.5 s after the reset, the controls, a power cycle back into
 Linux, and with a spoilt kernel the guard taking it out and the ROM
-putting the stock software back, byte for byte.
+putting the stock software back, byte for byte.  (The test's "power
+cycle" resets the processor only, so it also puts the drive in the state
+of a power-on with the stock disc in.  A disc changed while the unit ran
+and then only the processor reset left the emulated drive with its
+"medium changed" still to report, and the boot ROM did not get past
+that.  A power cut resets the drive on a unit, so the way out is: the
+stock disc in, then off and on; but whether a unit's ROM minds a drive
+that reports a power-on reset first has not been seen.)
 
 ## The hand-over
 
