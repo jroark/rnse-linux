@@ -52,6 +52,7 @@
 #include <asm/cacheflush.h>
 
 #define UART3		0x07a30000
+#define UART1		0x07a10000	/* the radio processor's line */
 #define PORT3		0x12600001
 #define ADC		0x07d00000
 #define ATA_REG		0x07800001	/* register n at +2n */
@@ -93,7 +94,7 @@ static const u8 settings[] = {
 	0, 0
 };
 
-static void __iomem *uart, *port3, *adc, *ata, *ata_data, *ata_alt;
+static void __iomem *uart, *port3, *adc, *ata, *ata_data, *ata_alt, *radio;
 static struct input_dev *input, *keyboard;
 static void type_knobs(int select, int volume);
 static unsigned long return_entry, return_stack;
@@ -659,6 +660,32 @@ static int __init keyboard_register(void)
 
 /* ---- The thread ------------------------------------------------------ */
 
+/* ---- The radio processor's keep-alive -------------------------------- */
+
+/* The stock software sends the radio processor 81 [06] once a minute,
+ * and nothing else regularly; a unit whose main processor sent it
+ * nothing (Linux, the SD loader's menu) was restarted into the stock
+ * software after about seven minutes.  Sent as sdk/src/radio.c sends it:
+ * the transmitter on only for the frame, the acknowledgement not waited
+ * for, some 6 ms of the line. */
+static void radio_keepalive(void)
+{
+	static const u8 frame[6] = { 0x01, 0x81, 0x00, 0x01, 0x06, 0x76 };
+	u16 control = __raw_readw(radio + 0x04);
+	int i, j;
+
+	__raw_writew(__raw_readw(radio + 0x08) & 0xffc7, radio + 0x08);
+	__raw_writew((control | 0x0030) & ~0x00c4, radio + 0x04);
+	for (i = 0; i < 6; i++) {
+		for (j = 0; j < 2000 && (__raw_readw(radio + 0x08) & 0x0200); j++)
+			udelay(10);
+		__raw_writew(frame[i], radio + 0x06);
+	}
+	for (j = 0; j < 2000 && !(__raw_readw(radio + 0x08) & 0x0004); j++)
+		udelay(10);	/* the last bit gone: status bit 2 */
+	__raw_writew(control, radio + 0x04);
+}
+
 static int controls(void *unused)
 {
 	u8 was[6] = { 0 };
@@ -666,9 +693,16 @@ static int controls(void *unused)
 	unsigned long return_since = jiffies;
 	int i;
 
+	unsigned long keepalive_at = jiffies;
+
 	/* A RETURN still down from the loader is let go first. */
 	return_down = 1;
+	radio_keepalive();
 	while (!kthread_should_stop()) {
+		if (time_after(jiffies, keepalive_at + 60 * HZ)) {
+			keepalive_at = jiffies;
+			radio_keepalive();
+		}
 		fp_poll();
 		motor_step();
 		if (eject_pending && motor == STILL) {
@@ -741,7 +775,8 @@ static int __init rnse_controls_init(void)
 	ata = ioremap(ATA_REG, 0x10);
 	ata_data = ioremap(ATA_DATA, 2);
 	ata_alt = ioremap(ATA_ALT, 1);
-	if (!uart || !port3 || !adc || !ata || !ata_data || !ata_alt)
+	radio = ioremap(UART1, 0x10);
+	if (!uart || !port3 || !adc || !ata || !ata_data || !ata_alt || !radio)
 		return -ENOMEM;
 
 	/* The controller as the loader left it: started, settings given. */
