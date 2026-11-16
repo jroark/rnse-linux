@@ -56,10 +56,60 @@ extern const char _stack_top[];
 
 static int s, row;
 
+/* ---- Tux, on the left of the screen while the kernel is read --------- */
+
+/* The colours: 1 white and 2 orange for the text, and these for him. */
+enum { PANEL = 3, BODY = 4, BEAK = 5, MOUTH = 6, SHINE = 7 };
+#define TEXT_X 124 /* the text, right of the panel */
+
+/* A filled ellipse, centre (cx, cy), half-axes rx and ry. */
+static void ellipse(int cx, int cy, int rx, int ry, u8 colour)
+{
+    int x, y;
+    u32 r2 = (u32)(rx * rx) * (u32)(ry * ry);
+    for (y = -ry; y <= ry; y++) {
+        int from = 1, to = 0;
+        for (x = -rx; x <= rx; x++)
+            if ((u32)(x * x) * (u32)(ry * ry) + (u32)(y * y) * (u32)(rx * rx) <= r2) {
+                if (from > to)
+                    from = x;
+                to = x;
+            }
+        if (from <= to)
+            screen_fill((cx + from) * s, (cy + y) * s, (to - from + 1) * s, s, colour);
+    }
+}
+
+/* A penguin of filled ellipses on a slate panel (he is black, and so is
+ * the screen): flippers, body, head, belly, eyes, beak, feet. */
+static void tux(void)
+{
+    screen_palette(PANEL, 44, 52, 70);
+    screen_palette(BODY, 14, 14, 18);
+    screen_palette(BEAK, 250, 184, 24);
+    screen_palette(MOUTH, 196, 112, 0);
+    screen_palette(SHINE, 90, 90, 104);
+    screen_fill(4 * s, 26 * s, 112 * s, 154 * s, PANEL);
+    ellipse(25, 112, 11, 34, BODY);   /* flippers */
+    ellipse(95, 112, 11, 34, BODY);
+    ellipse(60, 114, 38, 52, BODY);   /* body */
+    ellipse(60, 62, 27, 26, BODY);    /* head */
+    ellipse(52, 52, 5, 7, SHINE);     /* the light on his head */
+    ellipse(60, 124, 27, 40, 1);      /* belly */
+    ellipse(50, 60, 7, 10, 1);        /* eyes */
+    ellipse(70, 60, 7, 10, 1);
+    ellipse(52, 63, 3, 5, BODY);
+    ellipse(68, 63, 3, 5, BODY);
+    ellipse(60, 77, 14, 7, BEAK);     /* beak */
+    screen_fill(47 * s, 77 * s, 27 * s, s, MOUTH);
+    ellipse(41, 168, 19, 8, BEAK);    /* feet */
+    ellipse(79, 168, 19, 8, BEAK);
+}
+
 static void say(const char *text, u8 colour)
 {
-    screen_fill(0, (30 + 14 * row) * s, screen_width, 12 * s, 0);
-    screen_text(8 * s, (30 + 14 * row) * s, text, colour, 2 * s);
+    screen_fill(TEXT_X * s, (30 + 14 * row) * s, screen_width - TEXT_X * s, 12 * s, 0);
+    screen_text(TEXT_X * s, (30 + 14 * row) * s, text, colour, 2 * s);
     console_puts(text);
     console_puts("\n");
     row++;
@@ -117,7 +167,7 @@ static void controls(void)
         return_since = 0;
         loader_return(0);
         row = 7;
-        say("RETURN TO THE LOADER UNAVAILABLE", 2);
+        say("NO LOADER TO RETURN TO", 2);
     }
 }
 
@@ -207,6 +257,7 @@ int main(void)
     screen_palette(1, 255, 255, 255);
     screen_palette(2, 255, 96, 0);
     screen_text(8 * s, 6 * s, flash ? "LINUX FROM FLASH" : "LINUX FROM AN SD CARD", 2, 2 * s);
+    tux();
     if (flash) {
         /* The boot ROM leaves the faceplate controller in reset: started
          * here, and given its settings, as a program from flash must
@@ -235,13 +286,13 @@ int main(void)
             number("ERROR", (u32)-r);
             say("OFF AND ON 4 TIMES WITH", 1);
             say("THE STOCK DISC IN: THE", 1);
-            say("STOCK SOFTWARE GOES BACK", 1);
+            say("STOCK SOFTWARE RETURNS", 1);
             for (;;)
                 wait_ms(1000);
         }
     } else {
         say("READING VMLINUX.BIN", 1);
-        say("HOLD RETURN: BACK TO THE LOADER", 2);
+        say("HOLD RETURN: LOADER", 2);
         if (slot >= 0)
             r = load(slot, &size);
         else
@@ -256,10 +307,11 @@ int main(void)
     if (r || size < 0x2000 || REG32(KERNEL_ENTRY) == 0) {
         row = 2;
         number("NO KERNEL, ERROR", (u32)-r);
-        say("VMLINUX.BIN MISSING OR TOO LONG", 2);
+        say("VMLINUX.BIN MISSING", 2);
+        say("OR TOO LONG", 2);
         wait_ms(3000);
         loader_return(r ? r : -30);
-        say("RETURN TO THE LOADER UNAVAILABLE", 2);
+        say("NO LOADER TO RETURN TO", 2);
         for (;;)
             wait_ms(1000);
     }
