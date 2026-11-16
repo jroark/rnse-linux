@@ -4,15 +4,36 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
 mount -t tmpfs tmpfs /tmp
 hostname rnse
-echo "rnse: Linux on the RNS-E 192, BusyBox shell"
-# The screen: the kernel's messages cleared away, what this Linux is
-# (/usr/bin/sysinfo, also on the serial console), then how to type.
-printf '\033[2J\033[H' >/dev/tty1
-sysinfo | tee /dev/tty1
-echo >/dev/tty1
-cat <<'HELP' >/dev/tty1
+echo "rnse: Linux on the RNS-E 192 ($(cat /sys/kernel/rnse/mode 2>/dev/null) start)"
+# The disc must come out when CD EJECT is pressed, mounted or not: no
+# lock on the drive's door (the kernel also allows removal before it
+# ejects).
+echo 0 > /proc/sys/dev/cdrom/lock 2>/dev/null
+# The second console: what this Linux is (/usr/bin/sysinfo, also on the
+# serial console), then how to type.  The GUI is on the first.
+printf '\033[2J\033[H' >/dev/tty2
+sysinfo | tee /dev/tty2
+cat <<'HELP' >/dev/tty2
+
 Knob: pick a character; press it: keep it.
 NEXT/PREV: a-z 0-9 symbols A-Z. RETURN: delete.
 Soft keys: Tab, Ctrl-C (top), Space, Enter.
-Volume knob: history.  Hold RETURN: the loader.
+Volume knob: history.  INFO: back to the GUI.
 HELP
+# A card's AUTORUN.SH, in the background once the card is there: for
+# tests and the bench (the same trust as the SD loader's RNSE.BIN).
+(
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        for d in /dev/rnsesd0p1 /dev/rnsesd0 /dev/rnsesd1p1 /dev/rnsesd1; do
+            [ -b $d ] || continue
+            m=/media/sd${d#/dev/rnsesd}; m=${m%p1}
+            grep -q " $m " /proc/mounts || mount -t vfat -o ro,shortname=mixed $d $m 2>/dev/null
+            if [ -f $m/AUTORUN.SH ]; then
+                echo "rnse: running $m/AUTORUN.SH"
+                sh $m/AUTORUN.SH
+                exit
+            fi
+        done
+        sleep 1
+    done
+) </dev/null >/dev/console 2>&1 &

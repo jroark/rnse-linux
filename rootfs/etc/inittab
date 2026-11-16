@@ -1,8 +1,11 @@
-# BusyBox init on the RNS-E 192: a shell on the screen (typed on with the
-# faceplate, docs/linux.md "Rotary typing") and one on the SH-4's serial
-# port (the emulator prints it; no unit has it wired to anything known).
+# BusyBox init on the RNS-E 192: the user interface (rnse-gui) on the
+# screen's first console, a shell on the second (the GUI's "Shell" goes
+# there; INFO comes back), typed on with the faceplate (docs/linux.md,
+# "Rotary typing"), and a shell on the SH-4's serial port (the emulator
+# prints it; no unit has it wired to anything known).
 ::sysinit:/etc/init.d/rcS
-tty1::respawn:-/bin/sh
+tty1::respawn:/usr/bin/rnse-gui
+tty2::respawn:-/bin/sh
 ttySC1::respawn:-/bin/sh
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
