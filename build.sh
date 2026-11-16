@@ -101,6 +101,9 @@ export PATH="$toolchain/bin:$PATH"
 bb_version=1.37.0
 bb_sha256=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
 bb_tarball=$src/work/dl/busybox-$bb_version.tar.bz2
+# (The toolchain's step makes work/dl only when it builds; with the
+# shared toolchain already there, a fresh checkout has none.)
+mkdir -p "$src/work/dl"
 [ -f "$bb_tarball" ] || curl -fsSL -o "$bb_tarball" "https://busybox.net/downloads/busybox-$bb_version.tar.bz2"
 echo "$bb_sha256  $bb_tarball" | sha256sum -c - >/dev/null || {
     echo "busybox-$bb_version.tar.bz2: wrong SHA-256" >&2

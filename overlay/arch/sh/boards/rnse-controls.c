@@ -376,8 +376,10 @@ static int in_session(void)
 
 /* Run from its uncached address: every dirty line of the operand cache
  * written back (the kernel has used its stack since flush_cache_all; and
- * by OCBP over all of RAM, about 25 ms, rather than through the cache's
- * address array, which not every emulator build models), MMU
+ * by OCBP over all of RAM, 25 ms and more, rather than through the
+ * cache's address array, which not every emulator build models), with
+ * the watchdog strobed meanwhile (without that, a unit was reset by its
+ * external watchdog on the way and came up in the stock software), MMU
  * off and its TLB emptied, the caches as the stock software has them
  * (0x80008181) and both emptied, then loader_return(status) on the
  * loader's own stack.  r4 status, r5 the function, r6 its stack. */
@@ -391,10 +393,19 @@ asm(
 "	mov	r5, r8\n"
 "	mov	r6, r9\n"
 "	mov.l	5f, r1\n"	/* every line of RAM purged from the operand */
-"	mov.l	6f, r2\n"	/* cache (written back if dirty): 2M lines */
-"7:	ocbp	@r1\n"
-"	add	#32, r1\n"
-"	cmp/hs	r2, r1\n"
+"	mov.l	6f, r2\n"	/* cache (written back if dirty): 2M lines, */
+"	mov.l	8f, r3\n"	/* with an edge on the watchdog's strobe every */
+"	mov.l	9f, r7\n"	/* 128 KiB: interrupts are off and nothing else */
+"7:	ocbp	@r1\n"	/* strobes, and on a unit this loop takes */
+"	add	#32, r1\n"	/* longer than the 105 ms the watchdog waits */
+"	mov	r1, r0\n"
+"	and	r7, r0\n"
+"	tst	r0, r0\n"
+"	bf	10f\n"
+"	mov.b	@r3, r0\n"
+"	xor	#1, r0\n"
+"	mov.b	r0, @r3\n"
+"10:	cmp/hs	r2, r1\n"
 "	bf	7b\n"
 "	mov.l	1f, r1\n"	/* MMUCR: TI, AT off */
 "	mov	#4, r0\n"
@@ -415,7 +426,9 @@ asm(
 "3:	.long	0x80008989\n"	/* 0x80008181 | ICI | OCI */
 "4:	.long	0x400000f0\n"
 "5:	.long	0x8c000000\n"
-"6:	.long	0x90000000\n");
+"6:	.long	0x90000000\n"
+"8:	.long	0xb2300001\n"	/* the strobe: port 0, bit 0, uncached */
+"9:	.long	0x0001ffe0\n");
 
 static void return_to_loader(void)
 {
