@@ -20,8 +20,19 @@
  * panel_service (from sd_idle while the card is read) and under Linux
  * through the kernel's own driver (arch/sh/boards/rnse-controls.c).
  *
- * Should the kernel not be there, it says so and returns to sdboot.  See
- * docs/linux.md. */
+ * Should the kernel not be there, it says so and returns to sdboot.
+ *
+ * Installed in flash instead (`rnse firmware ... linuxboot-192.bin
+ * --kernel VMLINUX.BIN --swap swap-192.bin`), it is started by the boot
+ * ROM at every start, after the start-up code has counted the start for
+ * the guard (sdk/src/flash.c).  It then takes the kernel from the
+ * application module's place in the flash (0x210000, its header at
+ * +0x100: "RNSELNX1", length, CRC-32), checks it, and starts it with
+ * rnse.flash=1 on its command line.  Nothing here erases anything: the
+ * guard is the way out (switched off and on four times before the GUI
+ * has said that the start worked).  A kernel that is not there or not
+ * whole is said on the screen, and the controls go on working.  See
+ * docs/linux.md, "Linux in flash". */
 #include "rnse.h"
 
 #define KERNEL_LOAD 0x8c001000u
@@ -34,6 +45,10 @@
 #define SESSION_MAGIC 0x53444c31u
 
 #define RETURN_HOLD_MS 2000
+
+/* The kernel in the flash, uncached (fw::kernel_module). */
+#define FLASH_KERNEL_HEADER 0xa0210100u
+#define FLASH_KERNEL 0xa0210200u
 
 void irq_disable(void);
 void linux_enter(u32 entry);
@@ -125,6 +140,52 @@ static int started_from(void)
     return -1;
 }
 
+/* CRC-32 (IEEE, as zlib's), a nibble at a time. */
+static u32 crc32(const u8 *p, u32 n)
+{
+    static const u32 t[16] = {
+        0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac, 0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
+        0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c, 0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c,
+    };
+    u32 c = 0xffffffffu, i;
+    for (i = 0; i < n; i++) {
+        c ^= p[i];
+        c = (c >> 4) ^ t[c & 15];
+        c = (c >> 4) ^ t[c & 15];
+        if (!(i & 0xffff)) {
+            REG8(0xb2300001) ^= 1; /* the watchdog, meanwhile */
+            controls();
+        }
+    }
+    return ~c;
+}
+
+/* From the flash: the header checked, the kernel copied to RAM through
+ * uncached addresses (nothing to write back), its sum checked there. */
+static int load_from_flash(u32 *size)
+{
+    const volatile u32 *h = (const volatile u32 *)FLASH_KERNEL_HEADER;
+    const volatile u32 *from = (const volatile u32 *)FLASH_KERNEL;
+    volatile u32 *to = (volatile u32 *)(KERNEL_LOAD | 0x20000000u);
+    u32 n, i;
+    if (h[0] != 0x524e5345u || h[1] != 0x4c4e5831u) /* "RNSELNX1" */
+        return -40;
+    n = h[2];
+    if (n < 0x2000 || n > KERNEL_ROOM)
+        return -41;
+    for (i = 0; i < (n + 3) / 4; i++) {
+        to[i] = from[i];
+        if (!(i & 0x3fff)) {
+            REG8(0xb2300001) ^= 1;
+            controls();
+        }
+    }
+    if (crc32((const u8 *)(KERNEL_LOAD | 0x20000000u), n) != h[3])
+        return -42;
+    *size = n;
+    return 0;
+}
+
 static int load(int slot, u32 *size)
 {
     int r = sd_attach(slot);
@@ -138,30 +199,56 @@ static int load(int slot, u32 *size)
 int main(void)
 {
     u32 size = 0, a, t0, end;
-    int slot = started_from(), r = -2, i;
+    int slot = started_from(), r = -2, i, flash = firmware_installed();
 
     board_init();
-    console_puts("\nrnse sdk: linuxboot\n");
+    console_puts(flash ? "\nrnse sdk: linuxboot from flash\n" : "\nrnse sdk: linuxboot\n");
     s = screen_width / 400;
     screen_palette(1, 255, 255, 255);
     screen_palette(2, 255, 96, 0);
-    screen_text(8 * s, 6 * s, "LINUX FROM AN SD CARD", 2, 2 * s);
-    /* The faceplate controller as sdboot left it, lit, and answered from
-     * here on: restarted, it would leave the screen dark until it had its
-     * settings again (docs/custom-firmware.md, "Programs from an SD card"). */
-    panel_attach();
+    screen_text(8 * s, 6 * s, flash ? "LINUX FROM FLASH" : "LINUX FROM AN SD CARD", 2, 2 * s);
+    if (flash) {
+        /* The boot ROM leaves the faceplate controller in reset: started
+         * here, and given its settings, as a program from flash must
+         * (sdk/examples/base). */
+        panel_init();
+    } else {
+        /* The faceplate controller as sdboot left it, lit, and answered
+         * from here on: restarted, it would leave the screen dark until
+         * it had its settings again (docs/custom-firmware.md, "Programs
+         * from an SD card"). */
+        panel_attach();
+    }
     sd_idle = controls;
     display_idle = controls;
 
     t0 = millis();
-    say("READING VMLINUX.BIN", 1);
-    say("HOLD RETURN: BACK TO THE LOADER", 2);
-    if (slot >= 0)
-        r = load(slot, &size);
-    else
-        for (slot = 0; slot < 2 && r; slot++)
-            if (sd_present(slot))
-                r = load(slot, &size);
+    if (flash) {
+        /* Some time for the controller to start and light the screen,
+         * answered meanwhile. */
+        wait_ms(500);
+        say("KERNEL FROM THE FLASH", 1);
+        r = load_from_flash(&size);
+        if (r) {
+            row = 2;
+            say("NO KERNEL IN THE FLASH", 2);
+            number("ERROR", (u32)-r);
+            say("OFF AND ON 4 TIMES WITH", 1);
+            say("THE STOCK DISC IN: THE", 1);
+            say("STOCK SOFTWARE GOES BACK", 1);
+            for (;;)
+                wait_ms(1000);
+        }
+    } else {
+        say("READING VMLINUX.BIN", 1);
+        say("HOLD RETURN: BACK TO THE LOADER", 2);
+        if (slot >= 0)
+            r = load(slot, &size);
+        else
+            for (slot = 0; slot < 2 && r; slot++)
+                if (sd_present(slot))
+                    r = load(slot, &size);
+    }
     /* The kernel's own size, bss and all, is in its image: _end - _text
      * is not, so take the file and leave the bss to the check in
      * linux/build.sh. */
@@ -190,7 +277,11 @@ int main(void)
      * (the kernel appends its own, CONFIG_CMDLINE_EXTEND). */
     {
         char *p = (char *)KERNEL_COMMAND_LINE;
-        if (in_session()) {
+        if (flash) {
+            const char *k = "rnse.flash=1";
+            while (*k)
+                *p++ = *k++;
+        } else if (in_session()) {
             const char *k = "rnse.return=";
             while (*k)
                 *p++ = *k++;

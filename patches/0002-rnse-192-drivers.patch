@@ -1,0 +1,123 @@
+diff -ru a/drivers/ata/Kconfig b/drivers/ata/Kconfig
+--- a/drivers/ata/Kconfig	2026-11-10 10:07:06
++++ b/drivers/ata/Kconfig	2026-11-15 16:14:03
+@@ -1108,6 +1108,12 @@
+ 
+ 	  If unsure, say N.
+ 
++config PATA_RNSE
++	bool "Audi RNS-E 192 CD/DVD drive"
++	depends on SH_RNSE
++	help
++	  The ATAPI CD/DVD drive of the Audi RNS-E 192, by programmed I/O.
++
+ config PATA_PLATFORM
+ 	tristate "Generic platform device PATA support" if HAVE_PATA_PLATFORM
+ 	help
+diff -ru a/drivers/ata/Makefile b/drivers/ata/Makefile
+--- a/drivers/ata/Makefile	2026-11-10 10:07:06
++++ b/drivers/ata/Makefile	2026-11-15 16:14:03
+@@ -129,3 +129,4 @@
+ libata-$(CONFIG_ATA_ACPI)	+= libata-acpi.o
+ libata-$(CONFIG_SATA_ZPODD)	+= libata-zpodd.o
+ libata-$(CONFIG_PATA_TIMINGS)	+= libata-pata-timings.o
++obj-$(CONFIG_PATA_RNSE)		+= pata_rnse.o
+diff -ru a/drivers/iio/adc/Kconfig b/drivers/iio/adc/Kconfig
+--- a/drivers/iio/adc/Kconfig	2026-11-10 10:07:06
++++ b/drivers/iio/adc/Kconfig	2026-11-15 16:14:03
+@@ -1879,4 +1879,11 @@
+ 	  The driver can also be built as a module. If so, the module will be called
+ 	  xilinx-ams.
+ 
++config RNSE_ADC
++	bool "Audi RNS-E 192 A/D converter"
++	depends on SH_RNSE
++	help
++	  The seven inputs of the Audi RNS-E 192's A/D converter, the
++	  display's position among them.
++
+ endmenu
+diff -ru a/drivers/iio/adc/Makefile b/drivers/iio/adc/Makefile
+--- a/drivers/iio/adc/Makefile	2026-11-10 10:07:06
++++ b/drivers/iio/adc/Makefile	2026-11-15 16:14:03
+@@ -163,3 +163,4 @@
+ obj-$(CONFIG_XILINX_AMS) += xilinx-ams.o
+ xilinx-xadc-y := xilinx-xadc-core.o xilinx-xadc-events.o
+ obj-$(CONFIG_XILINX_XADC) += xilinx-xadc.o
++obj-$(CONFIG_RNSE_ADC) += rnse-adc.o
+diff -ru a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+--- a/drivers/misc/Kconfig	2026-11-10 10:07:06
++++ b/drivers/misc/Kconfig	2026-11-15 16:14:03
+@@ -661,4 +661,13 @@
+ source "drivers/misc/keba/Kconfig"
+ source "drivers/misc/amd-sbi/Kconfig"
+ source "drivers/misc/rp1/Kconfig"
++config RNSE_MEDIA
++	bool "Audi RNS-E 192 SD card processors: cards and sound"
++	depends on SH_RNSE && BLOCK && SND
++	select SND_PCM
++	help
++	  The two NEC uPD77115 signal processors of the Audi RNS-E 192:
++	  the SD cards in its two slots, read only, as block devices, and
++	  sound out of a processor's converter as an ALSA card.
++
+ endmenu
+diff -ru a/drivers/misc/Makefile b/drivers/misc/Makefile
+--- a/drivers/misc/Makefile	2026-11-10 10:07:06
++++ b/drivers/misc/Makefile	2026-11-15 16:14:03
+@@ -75,3 +75,4 @@
+ obj-y				+= keba/
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
++obj-$(CONFIG_RNSE_MEDIA)	+= rnse-media.o
+diff -ru a/drivers/net/can/Kconfig b/drivers/net/can/Kconfig
+--- a/drivers/net/can/Kconfig	2026-11-10 10:07:06
++++ b/drivers/net/can/Kconfig	2026-11-15 16:14:03
+@@ -217,6 +217,13 @@
+ 	  Xilinx CAN driver. This driver supports both soft AXI CAN IP and
+ 	  Zynq CANPS IP.
+ 
++config CAN_RNSE_HCAN2
++	bool "Audi RNS-E 192 CAN controller (HCAN2)"
++	depends on SH_RNSE
++	help
++	  The HCAN2-like CAN controller of the Audi RNS-E 192, on the car's
++	  infotainment bus at 100 kbit/s.
++
+ source "drivers/net/can/c_can/Kconfig"
+ source "drivers/net/can/cc770/Kconfig"
+ source "drivers/net/can/ctucanfd/Kconfig"
+diff -ru a/drivers/net/can/Makefile b/drivers/net/can/Makefile
+--- a/drivers/net/can/Makefile	2026-11-10 10:07:06
++++ b/drivers/net/can/Makefile	2026-11-15 16:14:03
+@@ -35,3 +35,4 @@
+ obj-$(CONFIG_CAN_XILINXCAN)	+= xilinx_can.o
+ 
+ subdir-ccflags-$(CONFIG_CAN_DEBUG_DEVICES) += -DDEBUG
++obj-$(CONFIG_CAN_RNSE_HCAN2)	+= rnse-hcan2.o
+diff -ru a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
+--- a/drivers/tty/serial/Kconfig	2026-11-10 10:07:06
++++ b/drivers/tty/serial/Kconfig	2026-11-15 16:14:03
+@@ -1619,6 +1619,14 @@
+ 	  snippet may be used:
+ 	    earlycon=esp32s3acm,mmio32,0x60038000
+ 
++config SERIAL_RNSE
++	bool "Audi RNS-E 192 companion chip serial channels"
++	depends on SH_RNSE
++	select SERIAL_CORE
++	help
++	  The serial channel of the Audi RNS-E 192's companion chip that
++	  goes to the radio processor, as /dev/ttyRN1.
++
+ endmenu
+ 
+ config SERIAL_MCTRL_GPIO
+diff -ru a/drivers/tty/serial/Makefile b/drivers/tty/serial/Makefile
+--- a/drivers/tty/serial/Makefile	2026-11-10 10:07:06
++++ b/drivers/tty/serial/Makefile	2026-11-15 16:14:03
+@@ -100,3 +100,4 @@
+ 
+ obj-$(CONFIG_KGDB_SERIAL_CONSOLE) += kgdboc.o
+ obj-$(CONFIG_SERIAL_NUVOTON_MA35D1) += ma35d1_serial.o
++obj-$(CONFIG_SERIAL_RNSE) += rnse-uart.o

@@ -29,14 +29,28 @@
  *    loader_return in sdk/examples/linuxboot, whose address and stack
  *    linuxboot passes as rnse.return=ADDR,STACK.  Linux leaves that
  *    program and the loader's session alone (board-rnse.c).
+ *    Started from flash (rnse.flash=1, sdk/examples/linuxboot) there
+ *    is no loader to go back to: the kernel says so and goes on.
  *  - The other keys and the knobs type, so that a shell can be used
  *    with nothing but the faceplate ("rotary typing", below).
+ *
+ * It also owns the A/D converter (rnse_adc_read, for the motor here and
+ * for drivers/iio/adc/rnse-adc.c), and /sys/kernel/rnse: "mode" (sd,
+ * flash or none: how the kernel was started), "healthy" (written by
+ * user space once it is up: the guard of a program in flash,
+ * sdk/src/flash.c, counts this start as one that worked), "display"
+ * (its position, and open, close or toggle written to it) and "eject".
  *
  * Two input devices: "RNS-E rotary keyboard" with what is typed, which
  * the console's keyboard handler takes, and "RNS-E faceplate" with the
  * keys as they are (BTN_TRIGGER_HAPPY1 and on, in the order of keymap[]
  * below, codes the console leaves alone) and the knobs (REL_DIAL the
- * select knob, REL_MISC the volume knob).
+ * select knob, REL_MISC the volume knob).  RETURN is the exception on
+ * the faceplate device: a short one is reported as pressed and let go
+ * when it is let go, and one held for the way back not at all, so that
+ * a program never takes the long one for a short one.  A program that
+ * wants the faceplate to itself grabs the rotary keyboard (EVIOCGRAB)
+ * so that nothing is typed on the console behind it.
  *
  * Reverse-engineered: docs/hardware.md and docs/linux.md.
  */
@@ -48,6 +62,11 @@
 #include <linux/input.h>
 #include <linux/irqflags.h>
 #include <linux/string.h>
+#include <linux/mutex.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
+#include <linux/workqueue.h>
+#include <linux/platform_data/rnse.h>
 #include <asm/addrspace.h>
 #include <asm/cacheflush.h>
 
@@ -65,6 +84,11 @@
 
 #define RETURN_HOLD_MS	2000
 
+/* The guard of a program in flash, in the battery-backed memory
+ * (sdk/src/flash.c): a mark, the count of starts, its complement. */
+#define GUARD		0x1003ff00
+#define GUARD_MARK	0x47524431	/* "GRD1" */
+
 /* Key state bits of the faceplate (sdk/include/rnse.h). */
 enum {
 	FP_INFO = 1, FP_NAV = 2, FP_TEL = 3, FP_NAME = 5, FP_MEDIA = 6,
@@ -80,6 +104,7 @@ static const u8 keymap[] = {
 	FP_SOFT_TL, FP_SOFT_TR, FP_SOFT_BL, FP_SOFT_BR, FP_SETUP, FP_CAR,
 	FP_NEXT, FP_PREV, FP_SELECT, FP_RETURN, FP_DISPLAY, FP_CD_EJECT,
 };
+#define RETURN_INDEX 15	/* FP_RETURN's place in keymap[] */
 
 /* What the stock software sends once the controller has started (as
  * sdk/src/hw192.c panel_settings): command, length of the data, data. */
@@ -98,6 +123,7 @@ static void __iomem *uart, *port3, *adc, *ata, *ata_data, *ata_alt, *radio;
 static struct input_dev *input, *keyboard;
 static void type_knobs(int select, int volume);
 static unsigned long return_entry, return_stack;
+static int from_flash;
 
 static int __init rnse_return_setup(char *s)
 {
@@ -106,6 +132,19 @@ static int __init rnse_return_setup(char *s)
 	return 1;
 }
 __setup("rnse.return=", rnse_return_setup);
+
+static int __init rnse_flash_setup(char *s)
+{
+	from_flash = s[0] == '1';
+	return 1;
+}
+__setup("rnse.flash=", rnse_flash_setup);
+
+bool rnse_started_from_flash(void)
+{
+	return from_flash;
+}
+EXPORT_SYMBOL_GPL(rnse_started_from_flash);
 
 /* ---- The faceplate controller --------------------------------------- */
 
@@ -258,17 +297,38 @@ static int motor = STILL, eject_pending;
 static unsigned long motor_since, moved_at;
 static u16 moved_from;
 
+static DEFINE_MUTEX(adc_lock);
+
+/* One conversion: channel n converts its group's inputs (0-3 or 4-6) up
+ * to n into results A, B, ... (sdk/src/hw192.c adc_convert). */
+int rnse_adc_read(int input)
+{
+	int i, v = -ETIMEDOUT;
+
+	if (input < 0 || input > 6)
+		return -EINVAL;
+	if (!adc)
+		return -ENODEV;
+	mutex_lock(&adc_lock);
+	__raw_writew(0x2000 | input, adc + 8);
+	for (i = 0; i < 1000; i++) {
+		if (__raw_readw(adc + 8) & 0x8000) {
+			v = __raw_readw(adc + 2 * (input & 3)) >> 6;
+			break;
+		}
+		udelay(1);
+	}
+	__raw_writew(0, adc + 8);
+	mutex_unlock(&adc_lock);
+	return v;
+}
+EXPORT_SYMBOL_GPL(rnse_adc_read);
+
 static u16 display_position(void)
 {
-	int i;
-	u16 v;
+	int v = rnse_adc_read(3);
 
-	__raw_writew(0x2003, adc + 8);	/* start: inputs 0 to 3 */
-	for (i = 0; i < 1000 && !(__raw_readw(adc + 8) & 0x8000); i++)
-		udelay(1);
-	v = __raw_readw(adc + 6) >> 6;
-	__raw_writew(0, adc + 8);
-	return v;
+	return v < 0 ? 1023 : v;
 }
 
 static int display_open(void)
@@ -352,10 +412,40 @@ static int ata_command(const u8 *packet)
 	return 0;
 }
 
+/* The drive is libata's once pata_rnse has it: the eject then goes
+ * through it, from a work item, so that this thread goes on answering
+ * the faceplate while the drive takes its time. */
+int __weak rnse_ata_eject(void)
+{
+	return -ENODEV;
+}
+
+bool __weak rnse_ata_eject_available(void)
+{
+	return false;
+}
+
+static void eject_by_libata(struct work_struct *w)
+{
+	int r = rnse_ata_eject();
+
+	if (r)
+		pr_warn("rnse: the drive did not eject (%d)\n", r);
+	else
+		pr_info("rnse: disc ejected\n");
+}
+static DECLARE_WORK(eject_work, eject_by_libata);
+
 static void eject(void)
 {
 	static const u8 start_stop_unit[12] = { 0x1b, 1, 0, 0, 2 };
-	int r = ata_command(start_stop_unit);
+	int r;
+
+	if (rnse_ata_eject_available()) {
+		schedule_work(&eject_work);
+		return;
+	}
+	r = ata_command(start_stop_unit);
 
 	if (r > 0)	/* a "disc changed" to be heard first */
 		r = ata_command(start_stop_unit);
@@ -366,6 +456,14 @@ static void eject(void)
 }
 
 /* ---- Back to the loader ---------------------------------------------- */
+
+void __weak rnse_media_quiesce(void)
+{
+}
+
+void __weak rnse_can_quiesce(void)
+{
+}
 
 static int in_session(void)
 {
@@ -438,6 +536,10 @@ static void return_to_loader(void)
 
 	pr_info("rnse: back to the SD loader\n");
 	motor_stop();
+	/* Sound stopped, the card processors left as the loader can use
+	 * them, the CAN controller quiet. */
+	rnse_media_quiesce();
+	rnse_can_quiesce();
 	local_irq_disable();
 	/* Timers (both units), DMA, and every interrupt source. */
 	__raw_writeb(0, (void __iomem *)0xffd80004);
@@ -504,9 +606,17 @@ static const u16 digit_keys[10] = {
 	KEY_0, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9,
 };
 
+/* A program that has the faceplate to itself (rnse-gui) grabs the rotary
+ * keyboard: nothing is typed then, and the ring stays where it was, so
+ * that the GUI's knob turns do not move it. */
+static bool typing(void)
+{
+	return keyboard && !rcu_access_pointer(keyboard->grab);
+}
+
 static void tap(u16 code, u16 modifier)
 {
-	if (!keyboard)
+	if (!typing())
 		return;
 	if (modifier)
 		input_report_key(keyboard, modifier, 1);
@@ -549,6 +659,8 @@ static void keep(void)
 
 static void type_knobs(int select, int volume)
 {
+	if (!typing())
+		return;
 	if (select) {
 		/* The first detent shows where it stands; the rest move. */
 		if (choosing)
@@ -575,6 +687,8 @@ static void type_group(int way)
 {
 	int g, n = ARRAY_SIZE(group_start);
 
+	if (!typing())
+		return;
 	for (g = n - 1; g > 0 && ring_at < group_start[g]; g--)
 		;
 	if (way < 0 && ring_at == group_start[g])
@@ -588,6 +702,8 @@ static void type_group(int way)
 /* A key of the faceplate pressed, other than EJECT, CD EJECT, RETURN. */
 static void type_key(int bit)
 {
+	if (!typing())
+		return;
 	switch (bit) {
 	case FP_SELECT:
 		if (choosing)
@@ -623,6 +739,8 @@ static void type_key(int bit)
 /* A short RETURN: Backspace, the character being chosen included. */
 static void type_backspace(void)
 {
+	if (!typing())
+		return;
 	keep();
 	tap(KEY_BACKSPACE, 0);
 }
@@ -658,6 +776,100 @@ static int __init keyboard_register(void)
 	return 0;
 }
 
+/* ---- /sys/kernel/rnse ------------------------------------------------- */
+
+/* Asked for from user space, done by the thread. */
+static atomic_t request_display = ATOMIC_INIT(0);	/* 1 open, 2 close, 3 toggle */
+static atomic_t request_eject = ATOMIC_INIT(0);
+
+static ssize_t mode_show(struct kobject *k, struct kobj_attribute *a, char *buf)
+{
+	return sysfs_emit(buf, "%s\n", from_flash ? "flash" : in_session() ? "sd" : "none");
+}
+
+/* The guard's count back to nothing, as firmware_healthy() does: only
+ * when started from flash, where linuxboot's start-up code counted. */
+static ssize_t healthy_store(struct kobject *k, struct kobj_attribute *a,
+			     const char *buf, size_t n)
+{
+	void __iomem *g;
+
+	if (!from_flash)
+		return -ENODEV;
+	g = ioremap(GUARD, 12);
+	if (!g)
+		return -ENOMEM;
+	__raw_writel(GUARD_MARK, g);
+	__raw_writel(0, g + 4);
+	__raw_writel(~0u, g + 8);
+	iounmap(g);
+	pr_info("rnse: this start counted as one that worked\n");
+	return n;
+}
+
+static ssize_t healthy_show(struct kobject *k, struct kobj_attribute *a, char *buf)
+{
+	void __iomem *g = ioremap(GUARD, 12);
+	u32 mark, count, check;
+
+	if (!g)
+		return -ENOMEM;
+	mark = __raw_readl(g);
+	count = __raw_readl(g + 4);
+	check = __raw_readl(g + 8);
+	iounmap(g);
+	if (mark != GUARD_MARK || count != ~check)
+		return sysfs_emit(buf, "none\n");
+	return sysfs_emit(buf, "%u\n", count);	/* starts in a row not yet healthy */
+}
+
+static ssize_t display_show(struct kobject *k, struct kobj_attribute *a, char *buf)
+{
+	return sysfs_emit(buf, "%d %s\n", display_position(),
+			  motor == OPENING ? "opening" : motor == CLOSING ? "closing" :
+			  display_open() ? "open" : "closed");
+}
+
+static ssize_t display_store(struct kobject *k, struct kobj_attribute *a,
+			     const char *buf, size_t n)
+{
+	if (sysfs_streq(buf, "open"))
+		atomic_set(&request_display, 1);
+	else if (sysfs_streq(buf, "close"))
+		atomic_set(&request_display, 2);
+	else if (sysfs_streq(buf, "toggle"))
+		atomic_set(&request_display, 3);
+	else
+		return -EINVAL;
+	return n;
+}
+
+static ssize_t eject_store(struct kobject *k, struct kobj_attribute *a,
+			   const char *buf, size_t n)
+{
+	atomic_set(&request_eject, 1);
+	return n;
+}
+
+static struct kobj_attribute mode_attr = __ATTR_RO(mode);
+static struct kobj_attribute healthy_attr = __ATTR(healthy, 0644, healthy_show, healthy_store);
+static struct kobj_attribute display_attr = __ATTR(display, 0644, display_show, display_store);
+static struct kobj_attribute eject_attr = __ATTR_WO(eject);
+
+static struct attribute *rnse_attrs[] = {
+	&mode_attr.attr, &healthy_attr.attr, &display_attr.attr, &eject_attr.attr, NULL,
+};
+
+static const struct attribute_group rnse_group = { .attrs = rnse_attrs };
+
+static void sysfs_setup(void)
+{
+	struct kobject *k = kobject_create_and_add("rnse", kernel_kobj);
+
+	if (!k || sysfs_create_group(k, &rnse_group))
+		pr_warn("rnse: no /sys/kernel/rnse\n");
+}
+
 /* ---- The thread ------------------------------------------------------ */
 
 /* ---- The radio processor's keep-alive -------------------------------- */
@@ -668,11 +880,26 @@ static int __init keyboard_register(void)
  * software after about seven minutes.  Sent as sdk/src/radio.c sends it:
  * the transmitter on only for the frame, the acknowledgement not waited
  * for, some 6 ms of the line. */
-static void radio_keepalive(void)
+int __weak rnse_radio_send(const u8 *buf, int n)
+{
+	return -ENODEV;
+}
+
+/* With the line's driver (rnse-uart.c, /dev/ttyRN1) bound the frame goes
+ * through it, between user space's frames; false when it has to wait
+ * for one to end. */
+static bool radio_keepalive(void)
 {
 	static const u8 frame[6] = { 0x01, 0x81, 0x00, 0x01, 0x06, 0x76 };
-	u16 control = __raw_readw(radio + 0x04);
-	int i, j;
+	u16 control;
+	int i, j, r;
+
+	r = rnse_radio_send(frame, sizeof(frame));
+	if (r == -EBUSY)
+		return false;
+	if (r != -ENODEV)
+		return true;
+	control = __raw_readw(radio + 0x04);
 
 	__raw_writew(__raw_readw(radio + 0x08) & 0xffc7, radio + 0x08);
 	__raw_writew((control | 0x0030) & ~0x00c4, radio + 0x04);
@@ -684,6 +911,7 @@ static void radio_keepalive(void)
 	for (j = 0; j < 2000 && !(__raw_readw(radio + 0x08) & 0x0004); j++)
 		udelay(10);	/* the last bit gone: status bit 2 */
 	__raw_writew(control, radio + 0x04);
+	return true;
 }
 
 static int controls(void *unused)
@@ -699,10 +927,8 @@ static int controls(void *unused)
 	return_down = 1;
 	radio_keepalive();
 	while (!kthread_should_stop()) {
-		if (time_after(jiffies, keepalive_at + 60 * HZ)) {
+		if (time_after(jiffies, keepalive_at + 60 * HZ) && radio_keepalive())
 			keepalive_at = jiffies;
-			radio_keepalive();
-		}
 		fp_poll();
 		motor_step();
 		if (eject_pending && motor == STILL) {
@@ -711,6 +937,19 @@ static int controls(void *unused)
 				eject();
 		}
 
+		switch (atomic_xchg(&request_display, 0)) {
+		case 1:
+			if (motor != OPENING)
+				motor_run(OPENING);
+			break;
+		case 2:
+			if (motor != CLOSING)
+				motor_run(CLOSING);
+			break;
+		case 3:
+			motor_run(display_position() < 500 ? CLOSING : OPENING);
+			break;
+		}
 		if (fp_key(FP_DISPLAY) && !display_down) {
 			if (motor != STILL)
 				motor_stop();
@@ -718,7 +957,7 @@ static int controls(void *unused)
 				motor_run(display_position() < 500 ? CLOSING : OPENING);
 		}
 		display_down = fp_key(FP_DISPLAY);
-		if (fp_key(FP_CD_EJECT) && !cd_eject_down) {
+		if ((fp_key(FP_CD_EJECT) && !cd_eject_down) || atomic_xchg(&request_eject, 0)) {
 			if (display_open()) {
 				eject();
 			} else {
@@ -729,8 +968,14 @@ static int controls(void *unused)
 		cd_eject_down = fp_key(FP_CD_EJECT);
 
 		if (!fp_key(FP_RETURN)) {
-			if (return_down == 2)	/* a short one */
+			if (return_down == 2) {	/* a short one */
 				type_backspace();
+				if (input) {
+					input_report_key(input, BTN_TRIGGER_HAPPY1 + RETURN_INDEX, 1);
+					input_sync(input);
+					input_report_key(input, BTN_TRIGGER_HAPPY1 + RETURN_INDEX, 0);
+				}
+			}
 			return_down = 0;
 		} else if (!return_down) {
 			return_down = 2;
@@ -741,14 +986,15 @@ static int controls(void *unused)
 			if (in_session())
 				return_to_loader();
 			if (!said++)
-				pr_warn("rnse: return to the SD loader is not available here\n");
+				pr_warn("rnse: return to the SD loader is not available here%s\n",
+					from_flash ? " (started from flash)" : "");
 		}
 
 		for (i = 0; i < ARRAY_SIZE(keymap); i++) {
 			int b = keymap[i];
 			int now = fp.keys[b >> 3] >> (b & 7) & 1;
 
-			if (now == (was[b >> 3] >> (b & 7) & 1))
+			if (now == (was[b >> 3] >> (b & 7) & 1) || b == FP_RETURN)
 				continue;
 			if (input)
 				input_report_key(input, BTN_TRIGGER_HAPPY1 + i, now);
@@ -806,8 +1052,10 @@ static int __init rnse_controls_init(void)
 	t = kthread_run(controls, NULL, "rnse-controls");
 	if (IS_ERR(t))
 		return PTR_ERR(t);
+	sysfs_setup();
 	pr_info("rnse: faceplate, display and eject controls; return to the loader %s\n",
-		in_session() ? "with RETURN held" : "not available");
+		in_session() ? "with RETURN held" :
+		from_flash ? "not available (started from flash)" : "not available");
 	return 0;
 }
 device_initcall(rnse_controls_init);

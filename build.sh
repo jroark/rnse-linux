@@ -127,6 +127,23 @@ make -C "$bb" -s -j"${JOBS:-$(nproc)}"
 make -C "$bb" -s busybox.links
 file "$bb/busybox" | grep -q 'MSB.*SH' || { echo "busybox is not big-endian SH" >&2; exit 1; }
 
+# Our own user space (linux/userland): one static program, rnse, with
+# minimp3 (CC0, a single header, pinned by commit and checked) for MP3.
+mp3_commit=a2ad968c94819fb98589cca8026e0a57958c963c
+mp3_sha256=af5a24330f4c5029be0f1aa32f3f81f6339bc823df1e2ce1b87292c0b9013286
+mp3=$src/work/dl/minimp3-$mp3_commit.h
+[ -f "$mp3" ] || curl -fsSL -o "$mp3" "https://raw.githubusercontent.com/lieff/minimp3/$mp3_commit/minimp3.h"
+echo "$mp3_sha256  $mp3" | sha256sum -c - >/dev/null || {
+    echo "minimp3.h: wrong SHA-256" >&2
+    exit 1
+}
+user=$work/userland
+mkdir -p "$user"
+cp "$mp3" "$user/minimp3.h"
+sh4eb-linux-musl-gcc -static -O2 -Wall -Wno-unused-result -I"$user" -o "$user/rnse" "$src"/userland/*.c
+sh4eb-linux-musl-strip "$user/rnse"
+file "$user/rnse" | grep -q 'MSB.*SH' || { echo "rnse is not big-endian SH" >&2; exit 1; }
+
 # The initramfs: our list, BusyBox and its links, linux/rootfs.
 mkdir -p "$work/init"
 list=$work/init/initramfs.list
@@ -134,6 +151,10 @@ cp "$src/initramfs.list" "$list"
 echo "file /bin/busybox $bb/busybox 0755 0 0" >> "$list"
 grep -v '^/bin/busybox$' "$bb/busybox.links" | sort -u | while read -r link; do
     echo "slink $link /bin/busybox 0777 0 0"
+done >> "$list"
+echo "file /usr/bin/rnse $user/rnse 0755 0 0" >> "$list"
+for part in rnse-radio rnse-play rnse-can rnse-gui; do
+    echo "slink /usr/bin/$part rnse 0777 0 0"
 done >> "$list"
 (cd "$src/rootfs" && find . -type f | sort) | while read -r f; do
     mode=0644
