@@ -4,7 +4,12 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
 mount -t tmpfs tmpfs /tmp
 hostname rnse
-echo "rnse: Linux on the RNS-E 192, BusyBox shell" | tee /dev/tty1
+echo "rnse: Linux on the RNS-E 192, BusyBox shell"
+# The screen: the kernel's messages cleared away, what this Linux is
+# (/usr/bin/sysinfo, also on the serial console), then how to type.
+printf '\033[2J\033[H' >/dev/tty1
+sysinfo | tee /dev/tty1
+echo >/dev/tty1
 cat <<'HELP' >/dev/tty1
 Knob: pick a character; press it: keep it.
 NEXT/PREV: a-z 0-9 symbols A-Z. RETURN: delete.
