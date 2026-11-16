@@ -1,0 +1,52 @@
+#!/bin/sh
+# What this Linux is and has, in a screenful: printed on the screen when
+# BusyBox has started (/etc/init.d/rcS), and again whenever it is typed.
+# Every line fits the screen's 50 columns (400 pixels at 8x8), and
+# there are few enough to leave the shell room below.
+W=50
+
+# A field of /proc/cpuinfo ("cpu type   : SH7750R"), or nothing.
+cpu() {
+    awk -v k="$1" '{
+        i = index($0, ":"); if (!i) next
+        key = substr($0, 1, i - 1); gsub(/[ \t]+$/, "", key)
+        if (key == k) { v = substr($0, i + 1); sub(/^[ \t]+/, "", v); print v; exit }
+    }' /proc/cpuinfo
+}
+
+# A line "Name:   value", cut to the screen's width.
+show() {
+    printf '%-9s%s\n' "$1" "$2" | cut -c1-$W
+}
+
+mem() {
+    awk -v k="$1" '$1 == k ":" { printf "%d", $2 / 1024 }' /proc/meminfo
+}
+
+echo "RNS-E 192: Linux, $(hostname)"
+uname -a | fold -w $W
+echo
+
+type=$(cpu "cpu type")
+family=$(cpu "cpu family")
+bogo=$(cpu "bogomips")
+show "CPU:" "${type:-?} (${family:-?}), ${bogo:-?} BogoMIPS"
+ic=$(cpu "icache size"); dc=$(cpu "dcache size")
+[ -n "$ic$dc" ] && show "Cache:" "I ${ic:-?}, D ${dc:-?}"
+show "Memory:" "$(mem MemTotal) MB, $(mem MemFree) MB free"
+show "Uptime:" "$(awk '{ printf "%.1f s", $1 }' /proc/uptime)"
+bb=$(busybox 2>&1 | head -1 | awk '{ print $2 }')
+show "BusyBox:" "${bb:-?}, $(busybox --list | wc -l) applets"
+if [ -d /sys/class/graphics/fb0 ]; then
+    fb=/sys/class/graphics/fb0
+    show "Screen:" "$(cat $fb/name) $(tr , x < $fb/virtual_size), $(cat $fb/bits_per_pixel) bpp"
+fi
+inputs=$(cat /sys/class/input/input*/name 2>/dev/null | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+[ -n "$inputs" ] && show "Input:" "$inputs"
+serial=$(ls /sys/class/tty 2>/dev/null | grep '^ttySC' | tr '\n' ' ')
+[ -n "$serial" ] && show "Serial:" "$serial"
+if grep -q 'rnse.return=' /proc/cmdline; then
+    show "Loader:" "hold RETURN 2 s to go back to it"
+else
+    show "Loader:" "none to go back to"
+fi
