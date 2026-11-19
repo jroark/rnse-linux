@@ -92,7 +92,7 @@ emulator prints it) and on the screen.  `rnse boot --gdb PORT` with
 `--key CD_EJECT@MS` and `--key RETURN@MS+2500` try the controls.  The
 end-to-end test:
 
-    PATH=$PWD/tools/sh4-docker:$PATH RNSE_DISC=stock.iso RNSE_LINUX=linux/out/VMLINUX.BIN \
+    PATH=$PWD/sdk/tools/sh4-docker:$PATH RNSE_DISC=stock.iso RNSE_LINUX=linux/out/VMLINUX.BIN \
         cargo test --release --test disc linux_boots_from_an_sd_card
 
 It runs with the caches modelled and RAM full of arbitrary data, and
