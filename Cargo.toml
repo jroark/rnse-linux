@@ -1,11 +1,10 @@
 # Linux's tests on the emulator: the kernel (build.sh) started by
 # linuxboot from an SD card through the SD loader and installed in flash
 # under a unit's boot ROM (tests/disc.rs).  No Rust code of its own: the
-# kernel's drivers and user space are C, built by build.sh, and linuxboot
-# with the kit.  Inside the rnse repository this is a member of its
-# workspace and uses the emulator from the directory above and the kit
-# beside it (RNSE_SDK to use another); on its own it takes the `rnse`
-# crate from git (see split/PLAN.md in rnse).
+# kernel's drivers and user space are C, built by build.sh, and
+# linuxboot with the kit. The emulator, the `rnse` crate, comes from
+# git, pinned to a commit of https://github.com/jroark/rnse (Cargo.lock
+# pins it too).
 [package]
 name = "rnse-linux"
 version = "0.1.0"
@@ -15,4 +14,13 @@ license = "GPL-2.0-only"
 publish = false
 
 [dev-dependencies]
-rnse = { path = ".." }
+rnse = { git = "https://github.com/jroark/rnse", rev = "0e3a2d4ce5941161e17ff4816126281fbcf80088" }
+
+[profile.release]
+opt-level = 3
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.dev]
+opt-level = 1

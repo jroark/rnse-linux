@@ -35,7 +35,7 @@ ROM for the flash); see the end.
     $RNSE_SDK/build.sh 192 ./linuxboot    # $RNSE_SDK/out/linuxboot-192.bin
 
 Paths here are from this directory (`linux/` in rnse).  `RNSE_SDK` is
-the kit: rnse's `sdk/` (`../sdk`, which the tests take when it is not
+the kit: rnse's `sdk/` (`../rnse-sdk`, which the tests take when it is not
 set) or a checkout of rnse-sdk; its `build.sh` takes `./linuxboot` as a
 program of this directory and puts its output in the kit's `out/`.
 
@@ -108,7 +108,7 @@ that nothing was fetched stale or written back lost.
 
 On a unit: `RNSE.BIN` and `VMLINUX.BIN` on a FAT card as for any program
 from a card ("Programs from an SD card" in
-[custom-firmware.md](../../docs/custom-firmware.md)), the card in before the
+[custom-firmware.md](https://github.com/jroark/rnse-sdk/blob/main/docs/custom-firmware.md)), the card in before the
 `sdboot` disc.  `VMLINUX.BIN` is 3.1 MB, the kernel with BusyBox in an
 xz-compressed initramfs; at the card processor's pace (293 KB/s measured
 through the stock program) that is some 11 s to read (6 s in the

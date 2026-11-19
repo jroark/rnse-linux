@@ -1,0 +1,35 @@
+# Builds linuxboot with the kit for both units and the emulator tests.
+# The kernel (build.sh: the kernel's source, a musl toolchain and BusyBox
+# downloaded, built in a container) is not built here; the end-to-end
+# tests (tests/disc.rs) need a kernel, a firmware disc and for the flash
+# ones a boot ROM, none of which is stored here or in CI: they report
+# success without them, so this run proves the program builds, not that
+# Linux works.
+name: build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The kit (rnse-sdk)
+        uses: actions/checkout@v4
+        with:
+          repository: jroark/rnse-sdk
+          ref: v0.1.0
+          path: rnse-sdk
+      - name: SH-4 cross compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-sh4-linux-gnu binutils-sh4-linux-gnu
+      - name: linuxboot
+        run: |
+          sh rnse-sdk/build.sh 192 ./linuxboot
+          sh rnse-sdk/build.sh 193 ./linuxboot
+      - name: Emulator tests (skip without a disc)
+        run: RNSE_SDK=$GITHUB_WORKSPACE/rnse-sdk cargo test --release
