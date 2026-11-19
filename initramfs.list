@@ -1,6 +1,6 @@
 # The RNS-E 192's initramfs, in the kernel's gen_init_cpio format.
-# linux/build.sh adds BusyBox, a link for each of its applets, and the
-# files of linux/rootfs/.
+# build.sh adds BusyBox, a link for each of its applets, and the
+# files of rootfs/.
 dir /bin 0755 0 0
 dir /sbin 0755 0 0
 dir /usr 0755 0 0

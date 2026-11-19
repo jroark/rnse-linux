@@ -1,5 +1,5 @@
 # Linux for the Audi RNS-E 192, started from an SD card by
-# sdk/examples/linuxboot.  See docs/linux.md.
+# linuxboot.  See docs/linux.md.
 CONFIG_LOCALVERSION="-rnse192"
 # CONFIG_LOCALVERSION_AUTO is not set
 # CONFIG_SWAP is not set

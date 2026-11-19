@@ -1,4 +1,4 @@
-# What linux/build.sh needs to build the kernel for the RNS-E 192:
+# What build.sh needs to build the kernel for the RNS-E 192:
 # an SH-4 GCC (big-endian code with -mb) and the kernel's host tools.
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \

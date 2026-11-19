@@ -1,6 +1,6 @@
 /* Linux from an SD card (192): the second stage after sdk/examples/sdboot.
  *
- * Copied to the card as RNSE.BIN, beside VMLINUX.BIN as linux/build.sh
+ * Copied to the card as RNSE.BIN, beside VMLINUX.BIN as build.sh
  * makes it.  sdboot loads and starts this program; it reads VMLINUX.BIN
  * from the same card to 0x8c001000, where the kernel's image begins with
  * its zero page, and enters the kernel at 0x8c002000 (_stext) with
@@ -300,7 +300,7 @@ int main(void)
     }
     /* The kernel's own size, bss and all, is in its image: _end - _text
      * is not, so take the file and leave the bss to the check in
-     * linux/build.sh. */
+     * build.sh. */
     end = KERNEL_LOAD + size;
     if (r || size < 0x2000 || REG32(KERNEL_ENTRY) == 0) {
         row = 2;

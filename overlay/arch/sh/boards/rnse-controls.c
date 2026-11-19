@@ -26,10 +26,10 @@
  *    down first if it is not.
  *  - RETURN held for 2 s returns to the loader: interrupts, timers and
  *    DMA stopped, caches written back, MMU off, and a call of the SDK's
- *    loader_return in sdk/examples/linuxboot, whose address and stack
+ *    loader_return in linuxboot, whose address and stack
  *    linuxboot passes as rnse.return=ADDR,STACK.  Linux leaves that
  *    program and the loader's session alone (board-rnse.c).
- *    Started from flash (rnse.flash=1, sdk/examples/linuxboot) there
+ *    Started from flash (rnse.flash=1, linuxboot) there
  *    is no loader to go back to: the kernel says so and goes on.
  *  - The other keys and the knobs type, so that a shell can be used
  *    with nothing but the faceplate ("rotary typing", below).

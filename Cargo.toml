@@ -1,0 +1,18 @@
+# Linux's tests on the emulator: the kernel (build.sh) started by
+# linuxboot from an SD card through the SD loader and installed in flash
+# under a unit's boot ROM (tests/disc.rs).  No Rust code of its own: the
+# kernel's drivers and user space are C, built by build.sh, and linuxboot
+# with the kit.  Inside the rnse repository this is a member of its
+# workspace and uses the emulator from the directory above and the kit
+# beside it (RNSE_SDK to use another); on its own it takes the `rnse`
+# crate from git (see split/PLAN.md in rnse).
+[package]
+name = "rnse-linux"
+version = "0.1.0"
+edition = "2021"
+description = "Tests of Linux for the RNS-E 192 on the rnse emulator"
+license = "GPL-2.0-only"
+publish = false
+
+[dev-dependencies]
+rnse = { path = ".." }
