@@ -1,5 +1,5 @@
 # musl-cross-make's configuration for a big-endian SH-4 C toolchain with
-# musl, for BusyBox (linux/build.sh).  Ubuntu's SH-4 C library is
+# musl, for BusyBox (build.sh).  Ubuntu's SH-4 C library is
 # little-endian only; the RNS-E's processor runs big-endian.
 TARGET = sh4eb-linux-musl
 GCC_VER = 13.3.0

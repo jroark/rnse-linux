@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the sh4eb-linux-musl toolchain into $1 (once): called by
-# linux/build.sh inside its container.  musl-cross-make is pinned by
+# build.sh inside its container.  musl-cross-make is pinned by
 # commit and checked against its SHA-256; it fetches GCC, binutils, musl
 # and their libraries itself and checks each against its own hashes.
 set -e

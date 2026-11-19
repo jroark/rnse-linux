@@ -6,7 +6,7 @@ SH-4, 64 MiB SDRAM), started one of two ways:
 - from an SD card, through the same chain as any program of the SDK's:
   the stock software starts `sdboot` from the disc, `sdboot` starts
   `RNSE.BIN` from the card, and here `RNSE.BIN` is
-  `sdk/examples/linuxboot`, which reads the kernel, `VMLINUX.BIN`, from
+  `linuxboot`, which reads the kernel, `VMLINUX.BIN`, from
   the same card and enters it;
 - or installed in the flash in the stock software's place, by an update
   disc that `rnse firmware ... --kernel` makes, and started by the boot
@@ -31,13 +31,18 @@ ROM for the flash); see the end.
 
 ## Building
 
-    linux/build.sh                       # linux/out/VMLINUX.BIN, vmlinux, config, System.map
-    sdk/build.sh 192 linuxboot           # sdk/out/linuxboot-192.bin
+    ./build.sh                            # out/VMLINUX.BIN, vmlinux, config, System.map
+    $RNSE_SDK/build.sh 192 ./linuxboot    # $RNSE_SDK/out/linuxboot-192.bin
 
-`linux/build.sh` downloads the kernel's source (6.18.63, pinned and
-checked against its SHA-256) into `linux/work/`, applies
-`linux/patches/`, copies `linux/overlay/` over the tree, and builds with
-`linux/rnse192_defconfig` in a container (`linux/Dockerfile`: Ubuntu's
+Paths here are from this directory (`linux/` in rnse).  `RNSE_SDK` is
+the kit: rnse's `sdk/` (`../sdk`, which the tests take when it is not
+set) or a checkout of rnse-sdk; its `build.sh` takes `./linuxboot` as a
+program of this directory and puts its output in the kit's `out/`.
+
+`build.sh` downloads the kernel's source (6.18.63, pinned and
+checked against its SHA-256) into `work/`, applies
+`patches/`, copies `overlay/` over the tree, and builds with
+`rnse192_defconfig` in a container (`Dockerfile`: Ubuntu's
 `gcc-sh4-linux-gnu`, which makes big-endian code with `-mb`).  The tree
 lives in a Docker volume, `rnse-linux-build`, because it does not unpack
 on a case-insensitive file system; `RNSE_LINUX_NATIVE=1` builds on a
@@ -48,10 +53,10 @@ User space wants a C library for big-endian SH-4, which Ubuntu does not
 have (its SH-4 one is little-endian).  So the build also makes a
 `sh4eb-linux-musl` toolchain with musl-cross-make (pinned by commit and
 checked; it fetches GCC 13.3.0, binutils 2.44 and musl 1.2.6 itself and
-checks each), once, into the same volume (`linux/toolchain/`; it takes
+checks each), once, into the same volume (`toolchain/`; it takes
 a while the first time), and with it a static BusyBox 1.37.0 (pinned,
-checked; `linux/busybox.config` has our changes to its defconfig) and
-our own `linux/userland`, with minimp3 for MP3 (one header, CC0, pinned
+checked; `busybox.config` has our changes to its defconfig) and
+our own `userland`, with minimp3 for MP3 (one header, CC0, pinned
 by commit and checked against its SHA-256 like the rest).
 
 The build stops when the configuration Kconfig ends up with is not the
@@ -62,38 +67,38 @@ What is ours, besides the configuration:
 
 | file | what |
 |------|------|
-| `linux/overlay/arch/sh/boards/board-rnse.c` | the board: machine vector, the watchdog's strobe, the companion chip's interrupt sources (an interrupt controller of their own), the platform devices, the flash's partitions, the battery-backed memory, the loader's memory kept |
-| `linux/overlay/arch/sh/boards/rnse-controls.c` | the faceplate's keys and knobs (also an input device), the display's motor, the A/D converter, the disc's eject, the way back to the loader, `/sys/kernel/rnse` |
-| `linux/overlay/drivers/video/fbdev/rnse-coralfb.c` | the screen: one layer of the MB86293, 400x235 at 8 bits through its palette |
-| `linux/overlay/drivers/...`, `linux/overlay/sound/...` | the other drivers: "The drivers" |
-| `linux/overlay/include/linux/platform_data/rnse.h` | what the drivers share: the interrupt sources, the converter, the eject |
-| `linux/patches/0001-sh-rnse-192-board.patch` | Kconfig and Makefile entries for the board, the controls and the screen, the board's machine type, and the processor's revision (below) |
-| `linux/patches/0002-rnse-192-drivers.patch` | Kconfig and Makefile entries for the other drivers |
-| `linux/userland/` | `rnse`, one static program with four names: `rnse-gui`, `rnse-radio`, `rnse-play`, `rnse-can` |
-| `linux/initramfs.list`, `linux/rootfs/` | the initramfs: BusyBox's init as `/init`, `/etc/inittab` (the GUI on the screen's first console, `tty1`, a shell on the second and one on the serial port), `/etc/init.d/rcS`, `/etc/profile` |
-| `linux/toolchain/`, `linux/busybox.config` | the user-space toolchain and BusyBox's configuration |
-| `sdk/examples/linuxboot` | the second stage on the card |
+| `overlay/arch/sh/boards/board-rnse.c` | the board: machine vector, the watchdog's strobe, the companion chip's interrupt sources (an interrupt controller of their own), the platform devices, the flash's partitions, the battery-backed memory, the loader's memory kept |
+| `overlay/arch/sh/boards/rnse-controls.c` | the faceplate's keys and knobs (also an input device), the display's motor, the A/D converter, the disc's eject, the way back to the loader, `/sys/kernel/rnse` |
+| `overlay/drivers/video/fbdev/rnse-coralfb.c` | the screen: one layer of the MB86293, 400x235 at 8 bits through its palette |
+| `overlay/drivers/...`, `overlay/sound/...` | the other drivers: "The drivers" |
+| `overlay/include/linux/platform_data/rnse.h` | what the drivers share: the interrupt sources, the converter, the eject |
+| `patches/0001-sh-rnse-192-board.patch` | Kconfig and Makefile entries for the board, the controls and the screen, the board's machine type, and the processor's revision (below) |
+| `patches/0002-rnse-192-drivers.patch` | Kconfig and Makefile entries for the other drivers |
+| `userland/` | `rnse`, one static program with four names: `rnse-gui`, `rnse-radio`, `rnse-play`, `rnse-can` |
+| `initramfs.list`, `rootfs/` | the initramfs: BusyBox's init as `/init`, `/etc/inittab` (the GUI on the screen's first console, `tty1`, a shell on the second and one on the serial port), `/etc/init.d/rcS`, `/etc/profile` |
+| `toolchain/`, `busybox.config` | the user-space toolchain and BusyBox's configuration |
+| `linuxboot` | the second stage on the card |
 
 ## Running it
 
 In the emulator, with the stock software doing the starting as on a
 unit:
 
-    sdk/build.sh 192 sdboot
-    rnse custom stock.iso V222 sdk/out/sdboot-192.bin sdboot.iso --index 0380
-    mkdir card && cp sdk/out/linuxboot-192.bin card/RNSE.BIN && cp linux/out/VMLINUX.BIN card/
+    $RNSE_SDK/build.sh 192 sdboot
+    rnse custom stock.iso V222 $RNSE_SDK/out/sdboot-192.bin sdboot.iso --index 0380
+    mkdir card && cp $RNSE_SDK/out/linuxboot-192.bin card/RNSE.BIN && cp out/VMLINUX.BIN card/
     rnse card card.img card
     rnse boot sdboot.iso --variant V222 --ignition --installed-index 0370 \
         --sd-card card.img --cycles 9000000000 --screenshot linux.png
 
 The kernel's console comes out on the SH-4's own serial port (the
 emulator prints it) and on the screen.  `rnse boot --gdb PORT` with
-`linux/out/vmlinux` debugs the kernel.  `--key EJECT@MS`,
+`out/vmlinux` debugs the kernel.  `--key EJECT@MS`,
 `--key CD_EJECT@MS` and `--key RETURN@MS+2500` try the controls.  The
 end-to-end test:
 
-    PATH=$PWD/sdk/tools/sh4-docker:$PATH RNSE_DISC=stock.iso RNSE_LINUX=linux/out/VMLINUX.BIN \
-        cargo test --release --test disc linux_boots_from_an_sd_card
+    PATH=$RNSE_SDK/tools/sh4-docker:$PATH RNSE_DISC=stock.iso RNSE_LINUX=$PWD/out/VMLINUX.BIN \
+        cargo test --release -p rnse-linux --test disc linux_boots_from_an_sd_card
 
 It runs with the caches modelled and RAM full of arbitrary data, and
 checks the kernel's messages, BusyBox's start, a command typed on the
@@ -103,7 +108,7 @@ that nothing was fetched stale or written back lost.
 
 On a unit: `RNSE.BIN` and `VMLINUX.BIN` on a FAT card as for any program
 from a card ("Programs from an SD card" in
-[custom-firmware.md](custom-firmware.md)), the card in before the
+[custom-firmware.md](../../docs/custom-firmware.md)), the card in before the
 `sdboot` disc.  `VMLINUX.BIN` is 3.1 MB, the kernel with BusyBox in an
 xz-compressed initramfs; at the card processor's pace (293 KB/s measured
 through the stock program) that is some 11 s to read (6 s in the
@@ -151,7 +156,7 @@ amplifier on a unit is still to be heard (`sdk/examples/pcmtest`); the
 amplifier's source is the radio processor's to set (`rnse-radio source
 decoder`).
 
-The user-space side, `linux/userland`, one static program `rnse`:
+The user-space side, `userland`, one static program `rnse`:
 
     rnse-radio start | status | version | source tuner|decoder|cd [VOLUME] | volume N | tune MHZ
     rnse-play FILE.wav|FILE.mp3 ...       # WAV (16 bits) and MP3, any rate, to 44.1 kHz
@@ -197,9 +202,9 @@ goes back to nothing (below).
 
 ## Linux in flash
 
-    sdk/build.sh 192 linuxboot && sdk/build.sh 192 swap
-    rnse firmware stock.iso V222 sdk/out/linuxboot-192.bin linux-flash.iso \
-        --kernel linux/out/VMLINUX.BIN --swap sdk/out/swap-192.bin --index NNNN
+    $RNSE_SDK/build.sh 192 ./linuxboot && $RNSE_SDK/build.sh 192 swap
+    rnse firmware stock.iso V222 $RNSE_SDK/out/linuxboot-192.bin linux-flash.iso \
+        --kernel out/VMLINUX.BIN --swap $RNSE_SDK/out/swap-192.bin --index NNNN
 
 The disc is an update disc as any `rnse firmware` makes
 (`docs/custom-firmware.md`, "A program in flash"), with one module more:
@@ -264,7 +269,7 @@ that reports a power-on reset first has not been seen.)
 
 `linuxboot` loads the image to 0x8c001000, where it begins with the
 kernel's zero page; the kernel, bss and all, has to end below 0x8c7c0000,
-where `sdboot` keeps its session and its saved copy (`linux/build.sh`
+where `sdboot` keeps its session and its saved copy (`build.sh`
 checks).  Before it jumps to 0x8c002000 (`_stext`) it writes the way
 back into the zero page's command line (`rnse.return=ADDR,STACK`: its
 own `loader_return` and stack, when it was started by `sdboot`; the

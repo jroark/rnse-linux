@@ -1,10 +1,10 @@
 #!/bin/sh
-# Build Linux for the Audi RNS-E 192:   linux/build.sh
+# Build Linux for the Audi RNS-E 192:   build.sh
 #
-# The result is linux/out/VMLINUX.BIN, the kernel's image from its zero
+# The result is out/VMLINUX.BIN, the kernel's image from its zero
 # page on (to be loaded at 0x8c001000 and entered at 0x8c002000) with a
-# BusyBox initramfs built in, and linux/out/vmlinux, the same as an ELF
-# file for `rnse boot --gdb`.  sdk/examples/linuxboot, copied to an SD
+# BusyBox initramfs built in, and out/vmlinux, the same as an ELF
+# file for `rnse boot --gdb`.  linuxboot, copied to an SD
 # card as RNSE.BIN beside VMLINUX.BIN, loads and starts it: see
 # docs/linux.md.
 #
@@ -127,7 +127,7 @@ make -C "$bb" -s -j"${JOBS:-$(nproc)}"
 make -C "$bb" -s busybox.links
 file "$bb/busybox" | grep -q 'MSB.*SH' || { echo "busybox is not big-endian SH" >&2; exit 1; }
 
-# Our own user space (linux/userland): one static program, rnse, with
+# Our own user space (userland): one static program, rnse, with
 # minimp3 (CC0, a single header, pinned by commit and checked) for MP3.
 mp3_commit=a2ad968c94819fb98589cca8026e0a57958c963c
 mp3_sha256=af5a24330f4c5029be0f1aa32f3f81f6339bc823df1e2ce1b87292c0b9013286
@@ -144,7 +144,7 @@ sh4eb-linux-musl-gcc -static -O2 -Wall -Wno-unused-result -I"$user" -o "$user/rn
 sh4eb-linux-musl-strip "$user/rnse"
 file "$user/rnse" | grep -q 'MSB.*SH' || { echo "rnse is not big-endian SH" >&2; exit 1; }
 
-# The initramfs: our list, BusyBox and its links, linux/rootfs.
+# The initramfs: our list, BusyBox and its links, rootfs.
 mkdir -p "$work/init"
 list=$work/init/initramfs.list
 cp "$src/initramfs.list" "$list"

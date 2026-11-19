@@ -9,7 +9,7 @@
  * code does the same, first once at setup and then from an hrtimer.
  *
  * Everything here is reverse-engineered: see docs/hardware.md and
- * docs/linux.md in the rnse repository.
+ * docs/linux.md.
  */
 #include <linux/init.h>
 #include <linux/io.h>

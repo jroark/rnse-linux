@@ -1,7 +1,7 @@
 /* A WAV or MP3 file to 44.1 kHz stereo, and rnse-play, which plays one.
  *
  * MP3 is decoded on the SH-4 by minimp3 (CC0; fetched and checked by
- * linux/build.sh, not kept here).  Other rates than 44.1 kHz are made
+ * build.sh, not kept here).  Other rates than 44.1 kHz are made
  * 44.1 kHz by straight-line interpolation, which is enough for a car's
  * speakers and cheap for a 235 MHz processor. */
 #include <fcntl.h>
