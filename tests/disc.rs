@@ -454,6 +454,48 @@ fn linux_boots_on_the_193() {
     // The watchdog was strobed all the while, through linuxboot's reads,
     // its handover and the kernel's start.
     assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
+
+    // The controls under Linux (rnse-controls.c): the faceplate answered,
+    // CD EJECT ejects (a disc put back in first), RETURN held says there
+    // is no loader and Linux goes on, and the knob types into the shell.
+    assert!(text.contains("rnse: faceplate, eject controls; return to the loader not available"), "{}: {:?}", name, tail);
+    let press = |m: &mut Machine, key: &str, hold: u64| {
+        assert!(m.panel_key(key, true));
+        assert_eq!(m.run(hold * ms), Stop::Budget, "{:?}", m.cpu.fault);
+        assert!(m.panel_key(key, false));
+    };
+    m.atapi().insert(Some(vec![0u8; 64 * 2048]));
+    assert_eq!(m.run(2_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let ejects = m.atapi().ejects;
+    let at = m.console.len();
+    press(&mut m, "CD_EJECT", 200);
+    until(&mut m, at, "rnse: disc ejected", 10).unwrap_or_else(|| panic!("{}: CD EJECT under Linux: {:?}", name, console(&m)));
+    let now = m.atapi().ejects;
+    assert_eq!(now, ejects + 1, "{}: CD EJECT under Linux", name);
+    let at = m.console.len();
+    press(&mut m, "RETURN", 2_500);
+    assert_eq!(m.run(500 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let text = console(&m);
+    assert!(text.contains("return to the SD loader is not available here"), "{}: {:?}", name, &text[text.len().saturating_sub(400)..]);
+    // A command typed with the knob, its answer in the kernel's log.
+    const RING: &str = "abcdefghijklmnopqrstuvwxyz0123456789-./_|>&;=*~$'\"<()[]{}!?#@%+:,\\^`ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut cur = 0;
+    for c in "echo rotary>/dev/kmsg".chars() {
+        if c == ' ' {
+            press(&mut m, "SOFT_BL", 100);
+        } else {
+            let target = RING.find(c).unwrap();
+            let detents = (target + RING.len() - cur) % RING.len() + 1;
+            assert!(m.panel_knob("main", detents as i32));
+            assert_eq!(m.run(100 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+            press(&mut m, "SELECT", 100);
+            cur = target;
+        }
+        assert_eq!(m.run(50 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    }
+    press(&mut m, "SOFT_BR", 100);
+    until(&mut m, at, "rotary", 10).unwrap_or_else(|| panic!("{}: the knob's command did not run: {:?}", name, &console(&m)[at..]));
+    assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
 }
 
 #[test]

@@ -494,12 +494,26 @@ What it takes:
 - **Its own inittab** (`rootfs-193/etc/inittab`): a shell on the
   screen's first console; the 192's GUI and drivers are not there yet.
 
-There is no way back to a loader on the 193 (its loader is on the disc):
-switching the unit off and on brings the stock software back.  On the
-bench 193, the panel stays dark until POWER is pressed, whatever runs.
+- **The controls** (`rnse-controls.c`, the 192's driver, now for both):
+  a kernel thread answers the faceplate on the chip's serial port at
+  0xff926000 every 10 ms (with the 193's settings, `sdk/src/hw193.c`),
+  CD EJECT ejects the disc through the drive's ATAPI registers at
+  0xffc62100 (allowing removal first, as the kit does on the unit), the
+  keys and knobs go to the input devices and the knob types into the
+  shell ("Rotary typing").  EJECT, the display key, is not followed: which
+  of the 193's motor lines opens the display is not yet measured, and the
+  kit leaves the key alone too.  The 192's flash guard, A/D converter and
+  radio line are not touched.
 
-Not yet: the controls (the faceplate's keys, and with them CD EJECT and
-RETURN under Linux; until then only before the kernel starts), the SD
-host, the CD drive, CAN, the radio link, sound and the GUI.  **The
-controls come before any run on the unit** (CLAUDE.md, "Mandatory
-hardware behavior").
+There is no way back to a loader on the 193 (its loader is on the disc):
+RETURN held for two seconds says so ("return to the SD loader is not
+available here") and Linux goes on; switching the unit off and on
+brings the stock software back.  On the bench 193, the panel stays dark
+until POWER is pressed, whatever runs.
+
+The emulator test also presses CD EJECT under Linux, holds RETURN, and
+types `echo rotary>/dev/kmsg` with the knob into the shell.
+
+Not yet: the SD host, the CD drive as a block device, CAN, the radio
+link (and whether the 193's radio processor wants the 192's keep-alive),
+sound, the display's motor and the GUI.  Not yet run on a 193.
