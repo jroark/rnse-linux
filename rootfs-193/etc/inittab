@@ -1,0 +1,8 @@
+# BusyBox init on the RNS-E 193: a shell on the screen's first console.
+# (No GUI yet, and no shell on the debug serial port: nothing routes its
+# interrupts.  docs/linux.md, "The 193".)  Replaces rootfs/etc/inittab
+# in the 193's initramfs (build.sh).
+::sysinit:/etc/init.d/rcS
+tty1::respawn:-/bin/sh
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r

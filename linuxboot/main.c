@@ -22,6 +22,13 @@
  *
  * Should the kernel not be there, it says so and returns to sdboot.
  *
+ * On the 193 it is started by sdk/examples/sdload193 from a card, as
+ * RNSE.BIN beside VMLINUX.BIN, and reads the kernel through the chip's
+ * own SD host (the card in slot 1 first, then slot 2).  There is no
+ * resident loader there (the 193's is on the disc): RETURN held says so,
+ * and Linux goes on.  The screen is the kit's 16-bit picture, which the
+ * kernel takes over as a simple frame buffer (board-rnse193.c).
+ *
  * Installed in flash instead (`rnse firmware ... linuxboot-192.bin
  * --kernel VMLINUX.BIN --swap swap-192.bin`), it is started by the boot
  * ROM at every start, after the start-up code has counted the start for
@@ -35,11 +42,17 @@
  * docs/linux.md, "Linux in flash". */
 #include "rnse.h"
 
-#define KERNEL_LOAD 0x8c001000u
-#define KERNEL_ENTRY 0x8c002000u
+/* The 192: the kernel's image from 0x8c001000 (its zero page), entered
+ * at 0x8c002000, ending below sdboot's session.  The 193 (rnse193_defconfig,
+ * CONFIG_ZERO_PAGE_OFFSET 0x200000): from 0x88200000, entered at
+ * 0x88201000, so that the kit's picture at 0x08110000 (the kernel's
+ * screen too) stays below the kernel, and ending below this program,
+ * started by sdk/examples/sdload193 at 0x09b60000. */
+#define ON_193 (screen_width != 400)
+#define KERNEL_LOAD (ON_193 ? 0x88200000u : 0x8c001000u)
+#define KERNEL_ENTRY (KERNEL_LOAD + 0x1000u)
 #define KERNEL_COMMAND_LINE (KERNEL_LOAD + 0x100)
-/* The kernel, its bss included, must end below sdboot's session. */
-#define KERNEL_ROOM (0x8c7c0000u - KERNEL_LOAD)
+#define KERNEL_ROOM (ON_193 ? 0x89b60000u - KERNEL_LOAD : 0x8c7c0000u - KERNEL_LOAD)
 /* What sdboot leaves for the program it starts (sdk/src/wayback.c). */
 #define SESSION ((volatile u32 *)0xac7c0000)
 #define SESSION_MAGIC 0x53444c31u
@@ -236,7 +249,7 @@ static int load_from_flash(u32 *size)
 
 static int load(int slot, u32 *size)
 {
-    int r = sd_attach(slot);
+    int r = ON_193 ? 1 : sd_attach(slot);
     if (r)
         r = sd_init(slot);
     if (r)
@@ -256,10 +269,11 @@ int main(void)
     screen_palette(2, 255, 96, 0);
     screen_text(8 * s, 6 * s, flash ? "LINUX FROM FLASH" : "LINUX FROM AN SD CARD", 2, 2 * s);
     tux();
-    if (flash) {
+    if (flash || ON_193) {
         /* The boot ROM leaves the faceplate controller in reset: started
          * here, and given its settings, as a program from flash must
-         * (sdk/examples/base). */
+         * (sdk/examples/base).  On the 193 too, as every program the
+         * SD loader starts there does (no handoff from it). */
         panel_init();
     } else {
         /* The faceplate controller as sdboot left it, lit, and answered
@@ -291,7 +305,13 @@ int main(void)
     } else {
         say("READING VMLINUX.BIN", 1);
         say("HOLD RETURN: LOADER", 2);
-        if (slot >= 0)
+        if (ON_193) {
+            /* Select 1 is the unit's slot 1, where the loader found this
+             * program; select 0 slot 2. */
+            r = load(1, &size);
+            if (r)
+                r = load(0, &size);
+        } else if (slot >= 0)
             r = load(slot, &size);
         else
             for (slot = 0; slot < 2 && r; slot++)

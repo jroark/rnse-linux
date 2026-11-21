@@ -390,6 +390,72 @@ fn linux_boots_from_an_sd_card() {
 /// and an MP3 file through a card processor's converter.  Then the GUI's
 /// pages, with the keys; and the disc comes out and the display folds
 /// down while sound plays.
+/// The 193: the stock software starts the SD loader on a disc
+/// (sdk/examples/sdload193), the loader starts linuxboot from a card
+/// (RNSE.BIN), and linuxboot reads the kernel beside it (VMLINUX.BIN;
+/// RNSE_LINUX_193 names the 193's, `RNSE_UNIT=193 build.sh` makes it)
+/// through the chip's SD host and enters it.  The kernel finds its
+/// R8A77730, keeps the watchdog strobed, takes the kit's 16-bit picture
+/// over as its frame buffer and starts BusyBox.  CD EJECT works while
+/// the card is read.  Needs a disc with the 193's software (RNSE_DISC);
+/// with a 192's it is skipped.
+#[test]
+fn linux_boots_on_the_193() {
+    use rnse::board::Model;
+    let Some(image) = disc() else { return };
+    let Some(kernel) = std::env::var_os("RNSE_LINUX_193") else { return };
+    let kernel = std::fs::read(kernel).expect("RNSE_LINUX_193 is not readable");
+    let sdk = kit();
+    let Some((mut m, name, _)) = started_by_stock_software(&image, Model::Rnse193, "sdload193") else { return };
+    if sdk_example(&image, Model::Rnse193, &own("linuxboot")).is_none() { return }
+    let linuxboot = std::fs::read(sdk.join("out/linuxboot-193.bin")).unwrap();
+    let entries = vec![rnse::fat::Entry::file("RNSE.BIN", linuxboot), rnse::fat::Entry::file("VMLINUX.BIN", kernel)];
+    let card = rnse::fat::card("LINUX", &entries, None).unwrap();
+    assert!(m.insert_card(0, rnse::dev::sdhi::Card::from_bytes(card).unwrap()));
+    let ms = m.cycles_per_ms();
+    m.watchdog.longest = 0;
+    let console = |m: &Machine| String::from_utf8_lossy(&m.console).into_owned();
+
+    // While the card is read: CD EJECT ejects.
+    for _ in 0..300 {
+        if console(&m).contains("READING VMLINUX.BIN") { break }
+        assert_eq!(m.run(100 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    }
+    assert!(console(&m).contains("READING VMLINUX.BIN"), "{}: {:?}", name, console(&m));
+    let ejects = m.atapi().ejects;
+    assert!(m.panel_key("CD_EJECT", true));
+    assert_eq!(m.run(300 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    assert!(m.panel_key("CD_EJECT", false));
+    assert_eq!(m.run(300 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let now = m.atapi().ejects;
+    assert_eq!(now, ejects + 1, "{}: CD EJECT while the card is read", name);
+
+    // The kernel's start, to BusyBox's.
+    until(&mut m, 0, "Run /init as init process", 120).unwrap_or_else(|| panic!("{}: Linux did not come up: {:?}", name, console(&m)));
+    assert_eq!(m.run(5_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let text = console(&m);
+    // To look at: RNSE_LINUX_LOG=file for the console, RNSE_LINUX_SHOT=file.png
+    // for the screen.
+    if let Some(path) = std::env::var_os("RNSE_LINUX_LOG") {
+        std::fs::write(path, &text).unwrap();
+    }
+    if let Some(path) = std::env::var_os("RNSE_LINUX_SHOT") {
+        let (w, h, rgb) = m.render();
+        std::fs::write(path, rnse::png::encode_rgb(w, h, &rgb)).unwrap();
+    }
+    let tail = &text[text.len().saturating_sub(800)..];
+    assert!(text.contains("rnse sdk: linuxboot"), "{}: {:?}", name, tail);
+    assert!(text.contains("Booting machvec: Audi RNS-E 193"), "{}: {:?}", name, tail);
+    assert!(text.contains("CPU: R8A77730"), "{}: {:?}", name, tail);
+    assert!(text.contains("simplefb registered"), "{}: {:?}", name, tail);
+    assert!(!text.contains("Kernel panic") && !text.contains("Oops"), "{}: {:?}", name, tail);
+    let (_, _, pixels) = m.render();
+    assert!(pixels.iter().any(|&p| p != 0), "{}: the screen is dark", name);
+    // The watchdog was strobed all the while, through linuxboot's reads,
+    // its handover and the kernel's start.
+    assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
+}
+
 #[test]
 fn linux_drivers_and_gui_from_an_sd_card() {
     use rnse::board::Model;

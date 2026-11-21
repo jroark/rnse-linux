@@ -4,11 +4,13 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
 mount -t tmpfs tmpfs /tmp
 hostname rnse
-echo "rnse: Linux on the RNS-E 192 ($(cat /sys/kernel/rnse/mode 2>/dev/null) start)"
+# (The unit from the kernel's machine name: the 192's and the 193's
+# initramfs share this.)
+echo "rnse: Linux on the $(sed -n 's/^machine[^:]*: //p' /proc/cpuinfo) ($(cat /sys/kernel/rnse/mode 2>/dev/null) start)"
 # The disc must come out when CD EJECT is pressed, mounted or not: no
 # lock on the drive's door (the kernel also allows removal before it
 # ejects).
-echo 0 > /proc/sys/dev/cdrom/lock 2>/dev/null
+[ -e /proc/sys/dev/cdrom/lock ] && echo 0 > /proc/sys/dev/cdrom/lock
 # The second console: what this Linux is (/usr/bin/sysinfo, also on the
 # serial console), then how to type.  The GUI is on the first.
 printf '\033[2J\033[H' >/dev/tty2

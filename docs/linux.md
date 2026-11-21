@@ -446,3 +446,60 @@ Not done: GPS, writing to cards, the card processors' own MP3 decoder,
 a compressed kernel (4.5 MB from a card is some 15 s at the card
 processor's pace), and settings beyond the radio's in the battery-backed
 memory.
+
+## The 193
+
+(Begun 2026-11-21.)  The same kernel, for the 193's R8A77730: built with
+`RNSE_UNIT=193 ./build.sh` (`rnse193_defconfig`, `out/193/VMLINUX.BIN`)
+and started from an SD card, the 193's way: the stock software starts
+the kit's SD loader on a disc (rnse-sdk's `examples/sdload193`), the
+loader starts `RNSE.BIN` from the card, and `linuxboot` (the same
+program, built with `../rnse-sdk/build.sh 193 ./linuxboot`) reads
+`VMLINUX.BIN` beside it through the chip's own SD host and enters it.
+
+On the emulator (`tests/disc.rs` `linux_boots_on_the_193`, with
+`RNSE_LINUX_193`) it comes up to a BusyBox shell on the screen: the
+kernel finds its R8A77730 (by its PRR, 0x412: its PVR, 0x10300700, is
+the SH7785's), 128 MiB, the 193's 32 KiB four-way caches, a 1 ms tick
+from timer unit 0, and takes the kit's picture over as its frame buffer.
+Not yet run on a 193.
+
+What it takes:
+
+- **A CPU of its own** (`patches/0003-sh-rnse-193.patch`,
+  `overlay/arch/sh/kernel/cpu/sh4a/setup-r8a77730.c`,
+  `clock-r8a77730.c`): an SH-4A with the SH7780's INTC2 at 0xff804000
+  and this chip's own sources (rnse's `docs/hardware-193.md`,
+  "Interrupts"); a TMU at 0xffd80000 (channel 0 the clock events,
+  channel 1 the clock source); the debug serial port at 0xffe40000 (the
+  SH7780's SCIF layout) as the kernel's console, written to polled,
+  since nothing routes its interrupts; fixed clocks, the peripheral
+  clock 49.95 MHz.
+- **The board** (`overlay/arch/sh/boards/board-rnse193.c`): the
+  watchdog strobed through bit 0 of 0xffc44008 from an hrtimer, the rest
+  of that port as it is, and the screen as a simple frame buffer.
+- **Room below the kernel**: CONFIG_ZERO_PAGE_OFFSET is 0x200000 on the
+  193, so the kernel starts at 0x08200000 and leaves 0x08000000-0x081fffff
+  alone.  The kit's picture is there (0x08110000, plane 6 of the display
+  unit, 16 bits a pixel, RGB 555, 832 pixels a line), which the SD
+  loader and linuxboot draw on and the kernel takes over as fb0
+  (`x1r5g5b5`, 800 x 480 from 16 pixels in and 8 lines down).  The
+  kernel ends below linuxboot at 0x09b60000 (build.sh checks).
+- **The hand-over** (rnse-sdk's `image_enter`, the 193's way): every
+  on-chip interrupt source masked, the timers stopped, the image written
+  back from the operand cache, the instruction cache invalidated.
+- **An SH-4A in the emulator**: the kernel built for one uses PREFI,
+  SYNCO, ICBI, MOVLI.L/MOVCO.L (its atomic operations) and MOVUA.L;
+  rnse's 193 takes them.
+- **Its own inittab** (`rootfs-193/etc/inittab`): a shell on the
+  screen's first console; the 192's GUI and drivers are not there yet.
+
+There is no way back to a loader on the 193 (its loader is on the disc):
+switching the unit off and on brings the stock software back.  On the
+bench 193, the panel stays dark until POWER is pressed, whatever runs.
+
+Not yet: the controls (the faceplate's keys, and with them CD EJECT and
+RETURN under Linux; until then only before the kernel starts), the SD
+host, the CD drive, CAN, the radio link, sound and the GUI.  **The
+controls come before any run on the unit** (CLAUDE.md, "Mandatory
+hardware behavior").

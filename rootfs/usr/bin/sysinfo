@@ -23,7 +23,8 @@ mem() {
     awk -v k="$1" '$1 == k ":" { printf "%d", $2 / 1024 }' /proc/meminfo
 }
 
-echo "RNS-E 192: Linux, $(hostname)"
+# The unit from the kernel's machine name ("Audi RNS-E 192" or "... 193").
+echo "$(sed -n 's/^machine[^:]*: Audi //p' /proc/cpuinfo): Linux, $(hostname)"
 uname -a | fold -w $W
 echo
 

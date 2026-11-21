@@ -1,5 +1,9 @@
 #!/bin/sh
 # Build Linux for the Audi RNS-E 192:   build.sh
+# or for the 193:                       RNSE_UNIT=193 build.sh
+#
+# (The 193's: out/193/VMLINUX.BIN, loaded at 0x88200000 and entered at
+# 0x88201000, from rnse193_defconfig, with rootfs-193/ over rootfs/.)
 #
 # The result is out/VMLINUX.BIN, the kernel's image from its zero
 # page on (to be loaded at 0x8c001000 and entered at 0x8c002000) with a
@@ -34,7 +38,7 @@ if [ -z "$RNSE_LINUX_INSIDE" ] && [ -z "$RNSE_LINUX_NATIVE" ]; then
     volume=rnse-linux-build-$(printf %s "$here" | shasum -a 256 2>/dev/null | cut -c1-12)
     [ "$volume" = rnse-linux-build- ] &&
         volume=rnse-linux-build-$(printf %s "$here" | sha256sum | cut -c1-12)
-    exec docker run --rm -e RNSE_LINUX_INSIDE=1 -e JOBS \
+    exec docker run --rm -e RNSE_LINUX_INSIDE=1 -e JOBS -e RNSE_UNIT \
         -v "$volume":/build -v rnse-sh4eb-toolchain:/toolchain -v "$here":/rnse-linux \
         rnse-sh4-kernel sh /rnse-linux/build.sh "$@"
 fi
@@ -48,7 +52,12 @@ else
     work=$here/work/native
     toolchain=$work/toolchain
 fi
-out=$src/out
+unit=${RNSE_UNIT:-192}
+case $unit in
+    192) out=$src/out build=$work/build ;;
+    193) out=$src/out/193 build=$work/build-193 ;;
+    *) echo "RNSE_UNIT must be 192 or 193" >&2; exit 1 ;;
+esac
 tarball=$src/work/linux-$version.tar.xz
 mkdir -p "$work" "$out"
 
@@ -73,23 +82,23 @@ fi
 cp -R "$src"/overlay/. "$tree"/
 
 make_k() {
-    make -C "$tree" O="$work/build" ARCH=sh CROSS_COMPILE=sh4-linux-gnu- \
+    make -C "$tree" O="$build" ARCH=sh CROSS_COMPILE=sh4-linux-gnu- \
         -j"${JOBS:-$(nproc)}" "$@"
 }
 
 # The configuration: ours, completed by the kernel's defaults.
-mkdir -p "$work/build"
-sed "s|^CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE=\"$work/init/initramfs.list\"|" \
-    "$src/rnse192_defconfig" > "$tree/arch/sh/configs/rnse192_defconfig"
-make_k rnse192_defconfig
+mkdir -p "$build"
+sed "s|^CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE=\"$work/init-$unit/initramfs.list\"|" \
+    "$src/rnse${unit}_defconfig" > "$tree/arch/sh/configs/rnse${unit}_defconfig"
+make_k rnse${unit}_defconfig
 # Every line of ours must have survived (a misspelt or impossible option
 # is dropped by Kconfig without a word).
-grep '^CONFIG_' "$tree/arch/sh/configs/rnse192_defconfig" | while read -r line; do
-    grep -qxF "$line" "$work/build/.config" || echo "$line"
-done > "$work/build/not-taken"
-if [ -s "$work/build/not-taken" ]; then
+grep '^CONFIG_' "$tree/arch/sh/configs/rnse${unit}_defconfig" | while read -r line; do
+    grep -qxF "$line" "$build/.config" || echo "$line"
+done > "$build/not-taken"
+if [ -s "$build/not-taken" ]; then
     echo "the configuration was not taken as written; dropped:" >&2
-    cat "$work/build/not-taken" >&2
+    cat "$build/not-taken" >&2
     exit 1
 fi
 
@@ -144,8 +153,8 @@ sh4eb-linux-musl-strip "$user/rnse"
 file "$user/rnse" | grep -q 'MSB.*SH' || { echo "rnse is not big-endian SH" >&2; exit 1; }
 
 # The initramfs: our list, BusyBox and its links, rootfs.
-mkdir -p "$work/init"
-list=$work/init/initramfs.list
+mkdir -p "$work/init-$unit"
+list=$work/init-$unit/initramfs.list
 cp "$src/initramfs.list" "$list"
 echo "file /bin/busybox $bb/busybox 0755 0 0" >> "$list"
 grep -v '^/bin/busybox$' "$bb/busybox.links" | sort -u | while read -r link; do
@@ -155,23 +164,29 @@ echo "file /usr/bin/rnse $user/rnse 0755 0 0" >> "$list"
 for part in rnse-radio rnse-play rnse-can rnse-gui; do
     echo "slink /usr/bin/$part rnse 0777 0 0"
 done >> "$list"
+# The 193's own files (rootfs-193/) in place of rootfs/'s of the same name.
 (cd "$src/rootfs" && find . -type f | sort) | while read -r f; do
+    from=$src/rootfs/$f
+    [ "$unit" = 193 ] && [ -f "$src/rootfs-193/$f" ] && from=$src/rootfs-193/$f
     mode=0644
-    [ -x "$src/rootfs/$f" ] && mode=0755
-    echo "file ${f#.} $src/rootfs/$f $mode 0 0"
+    [ -x "$from" ] && mode=0755
+    echo "file ${f#.} $from $mode 0 0"
 done >> "$list"
 
 make_k vmlinux
-sh4-linux-gnu-objcopy -O binary -R .note -R .comment -S "$work/build/vmlinux" "$out/VMLINUX.BIN"
-cp "$work/build/vmlinux" "$out/vmlinux"
-cp "$work/build/.config" "$out/config"
-cp "$work/build/System.map" "$out/System.map"
+sh4-linux-gnu-objcopy -O binary -R .note -R .comment -S "$build/vmlinux" "$out/VMLINUX.BIN"
+cp "$build/vmlinux" "$out/vmlinux"
+cp "$build/.config" "$out/config"
+cp "$build/System.map" "$out/System.map"
 ls -l "$out/VMLINUX.BIN"
 # The kernel, its bss included, has to end below the SD loader's session
-# at 0x8c7c0000, which it leaves alone for the way back.
+# at 0x8c7c0000 (192), which it leaves alone for the way back, or below
+# linuxboot at 0x89b60000 (193), which is still copying it.
+limit=0x8c7c0000
+[ "$unit" = 193 ] && limit=0x89b60000
 end=$(sh4-linux-gnu-nm "$out/vmlinux" | awk '$3 == "_end" { print $1 }')
-if [ "$((0x$end))" -ge "$((0x8c7c0000))" ]; then
-    echo "the kernel ends at 0x$end, over the SD loader's session at 0x8c7c0000" >&2
+if [ "$((0x$end))" -ge "$((limit))" ]; then
+    echo "the kernel ends at 0x$end, over $limit" >&2
     exit 1
 fi
 sh4-linux-gnu-nm "$out/vmlinux" | grep -E ' (_text|_stext|empty_zero_page|_end)$'
