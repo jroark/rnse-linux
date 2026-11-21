@@ -381,15 +381,6 @@ fn linux_boots_from_an_sd_card() {
     assert_eq!((cache.stale_fetches, cache.dirty_discarded), (0, 0), "{}: {:?}", name, cache);
 }
 
-/// The SD path to Linux (as `linux_boots_from_an_sd_card`) with a card
-/// that also holds files and a script, AUTORUN.SH, which /etc/init.d/rcS
-/// runs: every driver of docs/linux.md from user space.  The flash and
-/// the battery-backed memory read, the A/D converter, the card itself, the
-/// radio processor answering, CAN frames out on the bus (and the bus's
-/// frames in), the disc in the drive mounted and read, sound from a WAV
-/// and an MP3 file through a card processor's converter.  Then the GUI's
-/// pages, with the keys; and the disc comes out and the display folds
-/// down while sound plays.
 /// The 193: the stock software starts the SD loader on a disc
 /// (sdk/examples/sdload193), the loader starts linuxboot from a card
 /// (RNSE.BIN), and linuxboot reads the kernel beside it (VMLINUX.BIN;
@@ -498,6 +489,15 @@ fn linux_boots_on_the_193() {
     assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
 }
 
+/// The SD path to Linux (as `linux_boots_from_an_sd_card`) with a card
+/// that also holds files and a script, AUTORUN.SH, which /etc/init.d/rcS
+/// runs: every driver of docs/linux.md from user space.  The flash and
+/// the battery-backed memory read, the A/D converter, the card itself, the
+/// radio processor answering, CAN frames out on the bus (and the bus's
+/// frames in), the disc in the drive mounted and read, sound from a WAV
+/// and an MP3 file through a card processor's converter.  Then the GUI's
+/// pages, with the keys; and the disc comes out and the display folds
+/// down while sound plays.
 #[test]
 fn linux_drivers_and_gui_from_an_sd_card() {
     use rnse::board::Model;
