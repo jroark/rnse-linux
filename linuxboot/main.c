@@ -59,6 +59,48 @@
 
 #define RETURN_HOLD_MS 2000
 
+/* On the 193 there is no serial or CAN console for the kernel yet, and
+ * the panel stays dark until POWER is pressed, so the only sign of a
+ * boot can be hard to read.  So this reports two moments on the CAN bus
+ * (a CANable or logic analyser on the two wires), through the controller
+ * as the stock software and sdload193 left it set up (mailbox 1, no
+ * reset; the same raw send as sdk/examples/sdload193).  Records on 0x7F8
+ * (test, item, value[4], second[2]):
+ *   0xb0 0  the kernel is read: value its size, second the ms it took
+ *   0xb1 0  entering the kernel: value its entry, second the size >> 4
+ * A unit that does not then reappear on the bus (its stock frames) has
+ * not reset: the kernel is keeping the watchdog strobed.  192 only emits
+ * nothing (it has a serial console of its own on the companion chip). */
+#define CAN 0xffdf0000u
+#define CAN_MB1 (CAN + 0x100u + 0x20u)
+
+static void can_say(u8 test, u32 value, u32 second)
+{
+    u8 d[8] = { test, 0, (u8)(value >> 24), (u8)(value >> 16), (u8)(value >> 8),
+                (u8)value, (u8)(second >> 8), (u8)second };
+    u32 n;
+    int i;
+    if (!ON_193)
+        return;
+    REG16(CAN_MB1 + 0x00) = (u16)(0x7f8 << 2);
+    for (i = 0; i < 8; i++)
+        REG8(CAN_MB1 + 0x08 + i) = d[i];
+    REG16(CAN_MB1 + 0x10) = 8;
+    REG32(CAN + 0x20) = 0x00000002;
+    for (n = 0; n < 400000; n++)
+        if (REG16(CAN + 0x32) & 0x0002)
+            break;
+    if (REG16(CAN + 0x32) & 0x0002) {
+        REG16(CAN + 0x32) = 0x0002;
+    } else {
+        REG32(CAN + 0x28) = 0x00000002;
+        for (n = 0; n < 400000; n++)
+            if (!(REG16(CAN + 0x22) & 0x0002) || (REG16(CAN + 0x3a) & 0x0002))
+                break;
+        REG16(CAN + 0x3a) = 0x0002;
+    }
+}
+
 /* The kernel in the flash, uncached (fw::kernel_module). */
 #define FLASH_KERNEL_HEADER 0xa0210100u
 #define FLASH_KERNEL 0xa0210200u
@@ -336,6 +378,7 @@ int main(void)
     row = 2;
     number("BYTES", size);
     number("MS", millis() - t0);
+    can_say(0xb0, size, millis() - t0); /* the kernel is read (193) */
     say("STARTING LINUX", 2);
     wait_ms(300);
     /* Linux takes the motor over from a standstill. */
@@ -367,6 +410,7 @@ int main(void)
     a = end + 0x80000;
     if (a > KERNEL_LOAD + KERNEL_ROOM)
         a = KERNEL_LOAD + KERNEL_ROOM;
+    can_say(0xb1, KERNEL_ENTRY, size >> 4); /* entering the kernel (193) */
     image_enter(KERNEL_ENTRY, KERNEL_LOAD, a);
     return -31;
 }

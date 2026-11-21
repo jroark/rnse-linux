@@ -446,6 +446,11 @@ fn linux_boots_on_the_193() {
     assert!(text.contains("Booting machvec: Audi RNS-E 193"), "{}: {:?}", name, tail);
     assert!(text.contains("CPU: R8A77730"), "{}: {:?}", name, tail);
     assert!(text.contains("simplefb registered"), "{}: {:?}", name, tail);
+    // linuxboot reported on CAN that it read the kernel (0xb0) and
+    // entered it (0xb1): the only sign of the boot on a 193 unit, whose
+    // screen may be dark and has no serial console.
+    assert!(m.can().tx.iter().any(|f| f.id == 0x7f8 && f.data[0] == 0xb0), "{}: no kernel-read beacon", name);
+    assert!(m.can().tx.iter().any(|f| f.id == 0x7f8 && f.data[0] == 0xb1), "{}: no entering-kernel beacon", name);
     assert!(!text.contains("Kernel panic") && !text.contains("Oops"), "{}: {:?}", name, tail);
     let (_, _, pixels) = m.render();
     assert!(pixels.iter().any(|&p| p != 0), "{}: the screen is dark", name);
