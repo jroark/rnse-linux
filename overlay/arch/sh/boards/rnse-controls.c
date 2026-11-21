@@ -52,7 +52,19 @@
  * wants the faceplate to itself grabs the rotary keyboard (EVIOCGRAB)
  * so that nothing is typed on the console behind it.
  *
- * Reverse-engineered: docs/hardware.md and docs/linux.md.
+ * The 193 (CONFIG_SH_RNSE193) has the same faceplate and drive behind
+ * other ports: the faceplate on the chip's serial port at 0xff926000
+ * (reset line bit 1 of 0xff909004, left as linuxboot left it), the drive
+ * on its ATAPI interface at 0xffc62100 (a register to a 32-bit word,
+ * data bytes swapped).  There EJECT is not followed (which of its motor
+ * lines opens the display is not yet measured: the kit leaves the key
+ * alone too), CD EJECT ejects without folding the display first, as the
+ * kit does, and there is no loader to go back to (the 193's is on the
+ * disc): RETURN held says so.  Nothing of the 192's flash guard, A/D
+ * converter or radio line is touched there.
+ *
+ * Reverse-engineered: docs/hardware.md and docs/linux.md (and rnse's
+ * docs/hardware-193.md).
  */
 #include <linux/init.h>
 #include <linux/io.h>
@@ -70,6 +82,10 @@
 #include <asm/addrspace.h>
 #include <asm/cacheflush.h>
 
+#ifdef CONFIG_SH_RNSE193
+#define FP_SCIF		0xff926000	/* the faceplate's serial port */
+#define ATAPI		0xffc62100	/* the drive: register n at +4n */
+#endif
 #define UART3		0x07a30000
 #define UART1		0x07a10000	/* the radio processor's line */
 #define PORT3		0x12600001
@@ -107,7 +123,20 @@ static const u8 keymap[] = {
 #define RETURN_INDEX 15	/* FP_RETURN's place in keymap[] */
 
 /* What the stock software sends once the controller has started (as
- * sdk/src/hw192.c panel_settings): command, length of the data, data. */
+ * sdk/src/hw192.c and hw193.c panel_settings): command, length of the
+ * data, data. */
+#ifdef CONFIG_SH_RNSE193
+static const u8 settings[] = {
+	0x02, 10, 0x40, 0x1d, 0x4b, 0x42, 0x40, 0x00, 0x40, 0x01, 0xff, 0x05,
+	0x03, 13, 0x3c, 0x0a, 0x02, 0x0a, 0x04, 0x0a, 0x04, 0x0a, 0x04, 0x0a, 0x04, 0x0a, 0x0a,
+	0x0a, 5, 0x00, 0xff, 0x1c, 0xff, 0x1c,
+	0x09, 4, 0x00, 0x00, 0x0f, 0x06,
+	0x06, 12, 0x00, 0x00, 0x00, 0x00, 0x30, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x07, 4, 0x00, 0x00, 0x00, 0x03,
+	0x06, 12, 0x0c, 0x80, 0x07, 0x98, 0x09, 0x98, 0x09, 0x0e, 0x02, 0x18, 0x26, 0xd8,
+	0, 0
+};
+#else
 static const u8 settings[] = {
 	0x02, 10, 0x40, 0x1d, 0x4b, 0x42, 0x40, 0x40, 0x40, 0x01, 0xff, 0x05,
 	0x03, 13, 0x3c, 0x0a, 0x02, 0x0a, 0x04, 0x0a, 0x04, 0x0a, 0x04, 0x0a, 0x04, 0x0a, 0x0a,
@@ -118,8 +147,11 @@ static const u8 settings[] = {
 	0x06, 12, 0x0f, 0x8a, 0x07, 0x98, 0x09, 0x98, 0x00, 0x00, 0x02, 0x18, 0x26, 0xd8,
 	0, 0
 };
+#endif
 
-static void __iomem *uart, *port3, *adc, *ata, *ata_data, *ata_alt, *radio;
+static void __iomem *uart, *port3, *adc, *ata, *radio;
+/* (The 192's alone: the 193 has its drive's data and status in its register block.) */
+static void __iomem *ata_data __maybe_unused, *ata_alt __maybe_unused;
 static struct input_dev *input, *keyboard;
 static void type_knobs(int select, int volume);
 static unsigned long return_entry, return_stack;
@@ -157,6 +189,36 @@ static struct {
 	int waiting, attempts;
 } fp;
 
+#ifdef CONFIG_SH_RNSE193
+/* The 193's port (sdk/src/hw193.c panel_putc and panel_getc): status at
+ * +0x10 (bit 5 room to send, bits 0-1 something received, 4 and 7 an
+ * error or a break, cleared by writing zeroes), send at +0x0c, receive
+ * at +0x14. */
+static void fp_putc(u8 c)
+{
+	int i;
+
+	for (i = 0; i < 10000 && !(__raw_readw(uart + 0x10) & 0x0020); i++)
+		udelay(1);
+	__raw_writeb(c, uart + 0x0c);
+	__raw_writew(__raw_readw(uart + 0x10) & ~0x0060, uart + 0x10);
+}
+
+static int fp_getc(void)
+{
+	u16 status = __raw_readw(uart + 0x10);
+	int c;
+
+	if (status & 0x0003) {
+		c = __raw_readb(uart + 0x14);
+		__raw_writew(status & ~0x0093, uart + 0x10);
+		return c;
+	}
+	if (status & 0x0090)
+		__raw_writew(status & ~0x0090, uart + 0x10);
+	return -1;
+}
+#else
 static void fp_putc(u8 c)
 {
 	int i;
@@ -176,6 +238,7 @@ static int fp_getc(void)
 		return -1;
 	return __raw_readw(uart + 0x0a) & 0xff;
 }
+#endif
 
 static void fp_send(u8 cmd, const u8 *data, int n)
 {
@@ -307,7 +370,7 @@ int rnse_adc_read(int input)
 
 	if (input < 0 || input > 6)
 		return -EINVAL;
-	if (!adc)
+	if (IS_ENABLED(CONFIG_SH_RNSE193) || !adc)
 		return -ENODEV;
 	mutex_lock(&adc_lock);
 	__raw_writew(0x2000 | input, adc + 8);
@@ -331,19 +394,27 @@ static u16 display_position(void)
 	return v < 0 ? 1023 : v;
 }
 
+/* The 193: the display is not run (its motor lines are not measured),
+ * and the disc is ejected as it is, as the kit does. */
 static int display_open(void)
 {
+	if (IS_ENABLED(CONFIG_SH_RNSE193))
+		return 1;
 	return !(__raw_readb(port3) & 0x04) || display_position() <= 94;
 }
 
 static void motor_stop(void)
 {
-	__raw_writeb(__raw_readb(port3) & ~0x18, port3);
 	motor = STILL;
+	if (IS_ENABLED(CONFIG_SH_RNSE193))
+		return;
+	__raw_writeb(__raw_readb(port3) & ~0x18, port3);
 }
 
 static void motor_run(int way)
 {
+	if (IS_ENABLED(CONFIG_SH_RNSE193))
+		return;
 	__raw_writeb((__raw_readb(port3) & ~0x18) | (way == OPENING ? 0x08 : 0x10), port3);
 	motor = way;
 	motor_since = moved_at = jiffies;
@@ -369,11 +440,57 @@ static void motor_step(void)
 		motor_stop();
 }
 
+/* The drive's registers: on the 192 bytes two apart (0x07800001), the
+ * data register 16 bits, the alternate status apart; on the 193 a
+ * register to a 32-bit word, alternate status at +0x38, the data word's
+ * first byte in the low half (sdk/src/hw193.c). */
+#ifdef CONFIG_SH_RNSE193
+static u8 ata_rd(int reg)
+{
+	return __raw_readl(ata + 4 * reg);
+}
+
+static void ata_wr(int reg, u8 v)
+{
+	__raw_writel(v, ata + 4 * reg);
+}
+
+static u8 ata_alt_rd(void)
+{
+	return __raw_readl(ata + 0x38);
+}
+
+static void ata_data_wr(u16 w)
+{
+	__raw_writel((w >> 8) | (w & 0xff) << 8, ata);
+}
+#else
+static u8 ata_rd(int reg)
+{
+	return __raw_readb(ata + 2 * reg);
+}
+
+static void ata_wr(int reg, u8 v)
+{
+	__raw_writeb(v, ata + 2 * reg);
+}
+
+static u8 ata_alt_rd(void)
+{
+	return __raw_readb(ata_alt);
+}
+
+static void ata_data_wr(u16 w)
+{
+	__raw_writew(w, ata_data);
+}
+#endif
+
 static int ata_wait_clear(u8 bits, unsigned int ms)
 {
 	unsigned long end = jiffies + msecs_to_jiffies(ms);
 
-	while (__raw_readb(ata_alt) & bits) {
+	while (ata_alt_rd() & bits) {
 		if (time_after(jiffies, end))
 			return -1;
 		usleep_range(500, 1000);
@@ -390,25 +507,25 @@ static int ata_command(const u8 *packet)
 
 	if (ata_wait_clear(0x80, 5000))
 		return -1;
-	__raw_writeb(0xa0, ata + 2 * 6);	/* the drive */
+	ata_wr(6, 0xa0);	/* the drive */
 	if (ata_wait_clear(0x88, 5000))
 		return -1;
-	__raw_writeb(0x00, ata + 2 * 1);	/* no DMA */
-	__raw_writeb(0x00, ata + 2 * 4);	/* byte count limit */
-	__raw_writeb(0x08, ata + 2 * 5);
-	__raw_writeb(0xa0, ata + 2 * 7);	/* PACKET */
-	__raw_readb(ata_alt);
+	ata_wr(1, 0x00);	/* no DMA */
+	ata_wr(4, 0x00);	/* byte count limit */
+	ata_wr(5, 0x08);
+	ata_wr(7, 0xa0);	/* PACKET */
+	ata_alt_rd();
 	if (ata_wait_clear(0x80, 5000))
 		return -1;
-	if (!(__raw_readb(ata_alt) & 0x08))
-		return 0x100 | __raw_readb(ata + 2 * 1);
+	if (!(ata_alt_rd() & 0x08))
+		return 0x100 | ata_rd(1);
 	for (i = 0; i < 12; i += 2)
-		__raw_writew(packet[i] << 8 | packet[i + 1], ata_data);
-	__raw_readb(ata_alt);
+		ata_data_wr(packet[i] << 8 | packet[i + 1]);
+	ata_alt_rd();
 	if (ata_wait_clear(0x80, 30000))
 		return -1;
-	if (__raw_readb(ata + 2 * 7) & 0x01)
-		return 0x100 | __raw_readb(ata + 2 * 1);
+	if (ata_rd(7) & 0x01)
+		return 0x100 | ata_rd(1);
 	return 0;
 }
 
@@ -439,12 +556,17 @@ static DECLARE_WORK(eject_work, eject_by_libata);
 static void eject(void)
 {
 	static const u8 start_stop_unit[12] = { 0x1b, 1, 0, 0, 2 };
+	static const u8 allow_removal[12] = { 0x1e, 0, 0, 0, 0 };
 	int r;
 
 	if (rnse_ata_eject_available()) {
 		schedule_work(&eject_work);
 		return;
 	}
+	/* (The 193's stock software forbids removal; the kit allows it
+	 * before it ejects, as examples/eject193 did on the unit.) */
+	if (IS_ENABLED(CONFIG_SH_RNSE193))
+		ata_command(allow_removal);
 	r = ata_command(start_stop_unit);
 
 	if (r > 0)	/* a "disc changed" to be heard first */
@@ -809,9 +931,12 @@ static ssize_t healthy_store(struct kobject *k, struct kobj_attribute *a,
 
 static ssize_t healthy_show(struct kobject *k, struct kobj_attribute *a, char *buf)
 {
-	void __iomem *g = ioremap(GUARD, 12);
+	void __iomem *g;
 	u32 mark, count, check;
 
+	if (IS_ENABLED(CONFIG_SH_RNSE193))
+		return sysfs_emit(buf, "none\n");	/* no guard there */
+	g = ioremap(GUARD, 12);
 	if (!g)
 		return -ENOMEM;
 	mark = __raw_readl(g);
@@ -894,6 +1019,10 @@ static bool radio_keepalive(void)
 	u16 control;
 	int i, j, r;
 
+	/* (The 193's radio processor is on another port, and whether it
+	 * wants this too is not known: nothing is sent there.) */
+	if (IS_ENABLED(CONFIG_SH_RNSE193))
+		return true;
 	r = rnse_radio_send(frame, sizeof(frame));
 	if (r == -EBUSY)
 		return false;
@@ -950,7 +1079,7 @@ static int controls(void *unused)
 			motor_run(display_position() < 500 ? CLOSING : OPENING);
 			break;
 		}
-		if (fp_key(FP_DISPLAY) && !display_down) {
+		if (fp_key(FP_DISPLAY) && !display_down && !IS_ENABLED(CONFIG_SH_RNSE193)) {
 			if (motor != STILL)
 				motor_stop();
 			else
@@ -1015,6 +1144,11 @@ static int __init rnse_controls_init(void)
 	const u8 *p = settings;
 	int i;
 
+#ifdef CONFIG_SH_RNSE193
+	/* On-chip registers: P4, as they are. */
+	uart = (void __iomem *)FP_SCIF;
+	ata = (void __iomem *)ATAPI;
+#else
 	uart = ioremap(UART3, 0x10);
 	port3 = ioremap(PORT3, 1);
 	adc = ioremap(ADC, 0x10);
@@ -1024,6 +1158,7 @@ static int __init rnse_controls_init(void)
 	radio = ioremap(UART1, 0x10);
 	if (!uart || !port3 || !adc || !ata || !ata_data || !ata_alt || !radio)
 		return -ENOMEM;
+#endif
 
 	/* The controller as the loader left it: started, settings given. */
 	while (p[1])
@@ -1053,7 +1188,8 @@ static int __init rnse_controls_init(void)
 	if (IS_ERR(t))
 		return PTR_ERR(t);
 	sysfs_setup();
-	pr_info("rnse: faceplate, display and eject controls; return to the loader %s\n",
+	pr_info("rnse: faceplate, %seject controls; return to the loader %s\n",
+		IS_ENABLED(CONFIG_SH_RNSE193) ? "" : "display and ",
 		in_session() ? "with RETURN held" :
 		from_flash ? "not available (started from flash)" : "not available");
 	return 0;

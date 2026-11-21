@@ -1,0 +1,127 @@
+diff -ruN a/arch/sh/Kconfig b/arch/sh/Kconfig
+--- a/arch/sh/Kconfig	2026-11-21 02:03:00
++++ b/arch/sh/Kconfig	2026-11-21 02:04:30
+@@ -434,6 +434,15 @@
+ 	bool "Support SH7770 processor"
+ 	select CPU_SH4A
+ 
++config CPU_SUBTYPE_R8A77730
++	bool "Support R8A77730 processor (Audi RNS-E 193)"
++	select CPU_SH4A
++	help
++	  The system-on-chip of the Audi RNS-E 193 navigation unit, of
++	  Renesas' SH-Navi family, with no public manual: an SH-4A core,
++	  the SH7780's INTC2 at 0xff804000, a TMU at 0xffd80000, SCIF-like
++	  serial ports and an R-Car-like display unit.
++
+ config CPU_SUBTYPE_SH7780
+ 	bool "Support SH7780 processor"
+ 	select CPU_SH4A
+@@ -670,6 +679,7 @@
+ 
+ config ZERO_PAGE_OFFSET
+ 	hex
++	default "0x00200000" if SH_RNSE193
+ 	default "0x00010000" if PAGE_SIZE_64KB || SH_RTS7751R2D || \
+ 				SH_7751_SOLUTION_ENGINE
+ 	default "0x00004000" if PAGE_SIZE_16KB || SH_SH03
+diff -ruN a/arch/sh/boards/Kconfig b/arch/sh/boards/Kconfig
+--- a/arch/sh/boards/Kconfig	2026-11-21 02:03:02
++++ b/arch/sh/boards/Kconfig	2026-11-21 02:03:18
+@@ -316,6 +316,16 @@
+ 	  0x0c000000).  The kernel is started from an SD card by the rnse
+ 	  SDK's linuxboot loader.
+ 
++config SH_RNSE193
++	bool "Audi RNS-E 193"
++	depends on CPU_SUBTYPE_R8A77730
++	select INPUT
++	help
++	  Select RNS-E 193 if you are configuring for the 193 generation of
++	  the Audi RNS-E navigation unit (R8A77730, 128 MiB at 0x08000000,
++	  an 800x480 screen).  The kernel is started from an SD card by the
++	  rnse SDK's linuxboot, after the SD loader on a disc.
++
+ config SH_SHMIN
+ 	bool "SHMIN"
+ 	depends on CPU_SUBTYPE_SH7706
+diff -ruN a/arch/sh/boards/Makefile b/arch/sh/boards/Makefile
+--- a/arch/sh/boards/Makefile	2026-11-21 02:03:02
++++ b/arch/sh/boards/Makefile	2026-11-21 02:19:37
+@@ -14,6 +14,7 @@
+ obj-$(CONFIG_SH_POLARIS)	+= board-polaris.o
+ obj-$(CONFIG_SH_TITAN)		+= board-titan.o
+ obj-$(CONFIG_SH_RNSE)		+= board-rnse.o rnse-controls.o
++obj-$(CONFIG_SH_RNSE193)	+= board-rnse193.o rnse-controls.o
+ obj-$(CONFIG_SH_SH7757LCR)	+= board-sh7757lcr.o
+ obj-$(CONFIG_SH_APSH4A3A)	+= board-apsh4a3a.o
+ obj-$(CONFIG_SH_APSH4AD0A)	+= board-apsh4ad0a.o
+diff -ruN a/arch/sh/include/asm/processor.h b/arch/sh/include/asm/processor.h
+--- a/arch/sh/include/asm/processor.h	2026-11-21 02:03:01
++++ b/arch/sh/include/asm/processor.h	2026-11-21 02:03:18
+@@ -34,6 +34,7 @@
+ 	/* SH-4A types */
+ 	CPU_SH7763, CPU_SH7770, CPU_SH7780, CPU_SH7781, CPU_SH7785, CPU_SH7786,
+ 	CPU_SH7723, CPU_SH7724, CPU_SH7757, CPU_SH7734, CPU_SHX3,
++	CPU_R8A77730,
+ 
+ 	/* SH4AL-DSP types */
+ 	CPU_SH7343, CPU_SH7722, CPU_SH7366, CPU_SH7372,
+diff -ruN a/arch/sh/kernel/cpu/proc.c b/arch/sh/kernel/cpu/proc.c
+--- a/arch/sh/kernel/cpu/proc.c	2026-11-21 02:03:01
++++ b/arch/sh/kernel/cpu/proc.c	2026-11-21 02:03:18
+@@ -20,6 +20,7 @@
+ 	[CPU_SH7751R]	= "SH7751R",	[CPU_SH7760]	= "SH7760",
+ 	[CPU_SH4_202]	= "SH4-202",	[CPU_SH4_501]	= "SH4-501",
+ 	[CPU_SH7763]	= "SH7763",	[CPU_SH7770]	= "SH7770",
++	[CPU_R8A77730]	= "R8A77730",
+ 	[CPU_SH7780]	= "SH7780",	[CPU_SH7781]	= "SH7781",
+ 	[CPU_SH7343]	= "SH7343",	[CPU_SH7785]	= "SH7785",
+ 	[CPU_SH7786]	= "SH7786",	[CPU_SH7757]	= "SH7757",
+diff -ruN a/arch/sh/kernel/cpu/sh4/probe.c b/arch/sh/kernel/cpu/sh4/probe.c
+--- a/arch/sh/kernel/cpu/sh4/probe.c	2026-11-21 02:03:01
++++ b/arch/sh/kernel/cpu/sh4/probe.c	2026-11-21 02:13:18
+@@ -118,7 +118,12 @@
+ 		break;
+ 	case 0x3004:
+ 	case 0x3007:
+-		boot_cpu_data.type = CPU_SH7785;
++		/* PVR 0x10300700 is the SH7785's too: the Audi RNS-E 193's
++		 * R8A77730 is told by its PRR, 0x412. */
++		if (prr == 0x41)
++			boot_cpu_data.type = CPU_R8A77730;
++		else
++			boot_cpu_data.type = CPU_SH7785;
+ 		break;
+ 	case 0x4004:
+ 	case 0x4005:
+diff -ruN a/arch/sh/kernel/cpu/sh4a/Makefile b/arch/sh/kernel/cpu/sh4a/Makefile
+--- a/arch/sh/kernel/cpu/sh4a/Makefile	2026-11-21 02:03:00
++++ b/arch/sh/kernel/cpu/sh4a/Makefile	2026-11-21 02:03:18
+@@ -7,6 +7,7 @@
+ obj-$(CONFIG_CPU_SUBTYPE_SH7757)	+= setup-sh7757.o
+ obj-$(CONFIG_CPU_SUBTYPE_SH7763)	+= setup-sh7763.o
+ obj-$(CONFIG_CPU_SUBTYPE_SH7770)	+= setup-sh7770.o
++obj-$(CONFIG_CPU_SUBTYPE_R8A77730)	+= setup-r8a77730.o
+ obj-$(CONFIG_CPU_SUBTYPE_SH7780)	+= setup-sh7780.o
+ obj-$(CONFIG_CPU_SUBTYPE_SH7785)	+= setup-sh7785.o
+ obj-$(CONFIG_CPU_SUBTYPE_SH7786)	+= setup-sh7786.o intc-shx3.o
+@@ -25,6 +26,7 @@
+ clock-$(CONFIG_CPU_SUBTYPE_SH7757)	:= clock-sh7757.o
+ clock-$(CONFIG_CPU_SUBTYPE_SH7763)	:= clock-sh7763.o
+ clock-$(CONFIG_CPU_SUBTYPE_SH7770)	:= clock-sh7770.o
++clock-$(CONFIG_CPU_SUBTYPE_R8A77730)	:= clock-r8a77730.o
+ clock-$(CONFIG_CPU_SUBTYPE_SH7780)	:= clock-sh7780.o
+ clock-$(CONFIG_CPU_SUBTYPE_SH7785)	:= clock-sh7785.o
+ clock-$(CONFIG_CPU_SUBTYPE_SH7786)	:= clock-sh7786.o
+diff -ruN a/arch/sh/tools/mach-types b/arch/sh/tools/mach-types
+--- a/arch/sh/tools/mach-types	2026-11-21 02:03:02
++++ b/arch/sh/tools/mach-types	2026-11-21 02:03:18
+@@ -41,6 +41,7 @@
+ R7785RP			SH_R7785RP
+ TITAN			SH_TITAN
+ RNSE			SH_RNSE
++RNSE193			SH_RNSE193
+ SHMIN			SH_SHMIN
+ LBOXRE2			SH_LBOX_RE2
+ X3PROTO			SH_X3PROTO
