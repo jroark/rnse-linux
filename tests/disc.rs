@@ -403,6 +403,13 @@ fn linux_boots_on_the_193() {
     let entries = vec![rnse::fat::Entry::file("RNSE.BIN", linuxboot), rnse::fat::Entry::file("VMLINUX.BIN", kernel)];
     let card = rnse::fat::card("LINUX", &entries, None).unwrap();
     assert!(m.insert_card(0, rnse::dev::sdhi::Card::from_bytes(card).unwrap()));
+    // RNSE_LINUX_RATIO=n: n CPU cycles to a timer tick's worth of the
+    // peripheral clock (8 is nominal on the 193; 4 is a CPU at half the
+    // pace, as a unit runs memory-heavy code), to see how close the
+    // watchdog comes on a slower unit.
+    if let Some(r) = std::env::var("RNSE_LINUX_RATIO").ok().and_then(|r| r.parse().ok()) {
+        m.set_cpu_ratio(r);
+    }
     let ms = m.cycles_per_ms();
     m.watchdog.longest = 0;
     let console = |m: &Machine| String::from_utf8_lossy(&m.console).into_owned();
@@ -444,6 +451,8 @@ fn linux_boots_on_the_193() {
     assert!(pixels.iter().any(|&p| p != 0), "{}: the screen is dark", name);
     // The watchdog was strobed all the while, through linuxboot's reads,
     // its handover and the kernel's start.
+    eprintln!("{}: longest pause of the watchdog strobe {} ms, ending at {} ms, PC {:08x}", name,
+        m.watchdog.longest / ms, m.watchdog.longest_end / ms, m.watchdog.longest_pc);
     assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
 
     // The controls under Linux (rnse-controls.c): the faceplate answered,
