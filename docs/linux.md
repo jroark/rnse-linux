@@ -462,7 +462,15 @@ On the emulator (`tests/disc.rs` `linux_boots_on_the_193`, with
 kernel finds its R8A77730 (by its PRR, 0x412: its PVR, 0x10300700, is
 the SH7785's), 128 MiB, the 193's 32 KiB four-way caches, a 1 ms tick
 from timer unit 0, and takes the kit's picture over as its frame buffer.
-Not yet run on a 193.
+
+On a bench 193 an earlier build was started once (2026-11-21): it came
+up, and some time later the unit was back in its stock software.  That
+build sent the radio processor nothing, and a 193 whose main processor
+does that is started again after thirteen and a half minutes (rnse's
+`docs/hardware-193.md`, "Serial links"); whether that was all is not
+known, since that kernel said nothing anywhere but on the screen.  This
+one keeps the radio processor content and puts its log on the CAN bus;
+it has not been run on a unit yet.
 
 What it takes:
 
@@ -474,10 +482,20 @@ What it takes:
   channel 1 the clock source); the debug serial port at 0xffe40000 (the
   SH7780's SCIF layout) as the kernel's console, written to polled,
   since nothing routes its interrupts; fixed clocks, the peripheral
-  clock 49.95 MHz.
+  clock 49.848 MHz, as a bench unit's timers count.
 - **The board** (`overlay/arch/sh/boards/board-rnse193.c`): the
   watchdog strobed through bit 0 of 0xffc44008 from an hrtimer, the rest
   of that port as it is, and the screen as a simple frame buffer.
+- **The log on the CAN bus** (the same file): a 193 has no serial port
+  that leaves the unit and its panel may be dark, so what the kernel
+  prints goes out as frames 0x7FA as well (a counter and up to seven
+  characters), through the controller as the stock software and the kit
+  left it, mailbox 1.  A frame nobody takes in 3 ms is taken back and
+  its text dropped; after four of those only every 64th line is tried.
+  `tools/canlog.py LOG` puts the text together again from a log of the
+  bus (rnse-sdk's `tools/canbench.py run PORT LOG --ignition`).  The
+  watchdog is strobed with every frame: the log's first lines come out
+  before the kernel's timer serves it.
 - **Room below the kernel**: CONFIG_ZERO_PAGE_OFFSET is 0x200000 on the
   193, so the kernel starts at 0x08200000 and leaves 0x08000000-0x081fffff
   alone.  The kit's picture is there (0x08110000, plane 6 of the display
@@ -500,20 +518,32 @@ What it takes:
   CD EJECT ejects the disc through the drive's ATAPI registers at
   0xffc62100 (allowing removal first, as the kit does on the unit), the
   keys and knobs go to the input devices and the knob types into the
-  shell ("Rotary typing").  EJECT, the display key, is not followed: which
-  of the 193's motor lines opens the display is not yet measured, and the
-  kit leaves the key alone too.  The 192's flash guard, A/D converter and
-  radio line are not touched.
+  shell ("Rotary typing").  EJECT, the display key, folds the display
+  open and shut: bit 18 of the port at 0xff93f008 opens and bit 19
+  closes, the position is input 4 of the chip's A/D converter, and on
+  the way open the motor stops at its switch (input bit 20 low), as the
+  stock software's.  CD EJECT opens the display first.  The radio
+  processor gets its keep-alive on its own port, 0xff915000: 8a every
+  30 s and 81 [06] every 60, as the 193's stock software sends them.
+  The 192's flash guard is not touched.
 
-There is no way back to a loader on the 193 (its loader is on the disc):
-RETURN held for two seconds says so ("return to the SD loader is not
-available here") and Linux goes on; switching the unit off and on
-brings the stock software back.  On the bench 193, the panel stays dark
-until POWER is pressed, whatever runs.
+The way back is the 192's: RETURN held for two seconds goes back to the
+SD loader on the disc (the kit's loader for the 193 keeps a session
+since its v0.4.0).  The kernel keeps its hands off the loader's saved
+copy and session (0x0c7c0000, 256 KiB) and off linuxboot (0x09b60000,
+1 MiB), and leaves through a routine of the 193's own: RAM written back
+from the operand cache with the watchdog strobed, timers stopped and
+every interrupt source masked, the MMU off, then linuxboot's
+`loader_return`.  Started without a session it says "return to the SD
+loader is not available here" and goes on; switching the unit off and
+on brings the stock software back.  On the bench 193, the panel stays
+dark until POWER is pressed, whatever runs.
 
-The emulator test also presses CD EJECT under Linux, holds RETURN, and
-types `echo rotary>/dev/kmsg` with the knob into the shell.
+The emulator test also reads the kernel's log off the CAN bus, sees the
+keep-alive, folds the display with its key, presses CD EJECT under
+Linux, types `echo rotary>/dev/kmsg` with the knob into the shell, and
+holds RETURN to find the loader on the screen again.
 
-Not yet: the SD host, the CD drive as a block device, CAN, the radio
-link (and whether the 193's radio processor wants the 192's keep-alive),
-sound, the display's motor and the GUI.  Not yet run on a 193.
+Not yet: the SD host, the CD drive as a block device, a CAN network
+device, the radio link beyond its keep-alive, sound and the GUI.  This
+build has not been run on a 193.

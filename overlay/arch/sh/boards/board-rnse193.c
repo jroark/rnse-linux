@@ -26,6 +26,8 @@
  * and this repository's docs/linux.md.
  */
 #include <linux/init.h>
+#include <linux/console.h>
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
@@ -67,6 +69,94 @@ static int __init rnse193_watchdog_start(void)
 }
 early_initcall(rnse193_watchdog_start);
 
+/* ---- The kernel's log on the CAN bus -------------------------------- */
+
+/*
+ * A 193 has no serial port that leaves the unit, and its panel may be
+ * dark: what the kernel prints goes out on the CAN bus as well, through
+ * the controller as the stock software and the kit left it (running,
+ * 100 kbit/s, mailbox 1 theirs for sending: rnse's docs/hardware-193.md,
+ * "CAN"; the top bit of its control register is not touched).  Frames
+ * 0x7FA: a counter, then up to seven characters.  A frame that does not
+ * go out in 3 ms is taken back and its text dropped, so a bus with
+ * nobody on it costs the kernel little; the first lines of a start come
+ * out in full, later ones as the bus has room (a line a millisecond and
+ * a half at best).  rnse-sdk's tools/canbench.py and bench193.py log
+ * the bus.
+ */
+#define RCAN		0xffdf0000
+#define RCAN_MB1	(RCAN + 0x100 + 0x20)
+#define CANLOG_ID	0x7fa
+
+static bool canlog_frame(const char *s, unsigned int n)
+{
+	static u8 counter;
+	void __iomem *can = (void __iomem *)RCAN, *mb = (void __iomem *)RCAN_MB1;
+	unsigned int i;
+
+	/* Not while the controller is in reset or halted. */
+	if (__raw_readw(can) & 0x0003)
+		return false;
+	/* A frame takes more than a millisecond, and the log's first
+	 * lines come before anything else serves the watchdog. */
+	rnse193_strobe();
+	__raw_writew(CANLOG_ID << 2, mb);
+	__raw_writeb(counter++, mb + 8);
+	for (i = 0; i < 7; i++)
+		__raw_writeb(i < n ? s[i] : 0, mb + 9 + i);
+	__raw_writew(1 + n, mb + 0x10);
+	__raw_writel(0x00000002, can + 0x20);		/* send mailbox 1 */
+	for (i = 0; i < 300; i++) {
+		if (__raw_readw(can + 0x32) & 0x0002) {
+			__raw_writew(0x0002, can + 0x32);	/* sent */
+			return true;
+		}
+		udelay(10);
+	}
+	__raw_writel(0x00000002, can + 0x28);		/* take it back */
+	for (i = 0; i < 200; i++) {
+		if (!(__raw_readw(can + 0x22) & 0x0002) || (__raw_readw(can + 0x3a) & 0x0002))
+			break;
+		udelay(10);
+	}
+	__raw_writew(0x0002, can + 0x3a);
+	return false;
+}
+
+static void canlog_write(struct console *con, const char *s, unsigned int n)
+{
+	static unsigned int failed;
+
+	/* A bus that takes nothing: a frame is tried now and then only. */
+	if (failed >= 4 && (failed++ & 63))
+		return;
+	while (n) {
+		unsigned int k = n > 7 ? 7 : n;
+
+		if (!canlog_frame(s, k)) {
+			failed++;
+			return;
+		}
+		failed = 0;
+		s += k;
+		n -= k;
+	}
+}
+
+static struct console canlog_console = {
+	.name	= "canlog",
+	.write	= canlog_write,
+	.flags	= CON_PRINTBUFFER | CON_ENABLED,
+	.index	= -1,
+};
+
+static int __init rnse193_canlog_start(void)
+{
+	register_console(&canlog_console);
+	return 0;
+}
+console_initcall(rnse193_canlog_start);
+
 /* ---- The screen --------------------------------------------------- */
 
 static struct simplefb_platform_data fb_data = {
@@ -104,7 +194,19 @@ static void __init rnse193_setup(char **cmdline_p)
 	pr_info("Audi RNS-E 193\n");
 }
 
+/*
+ * The way back to the SD loader (rnse-controls.c): the loader's saved
+ * copy and session (0x0c7c0000, 256 KiB) and the linuxboot program
+ * whose loader_return restores it (0x09b60000, 1 MiB) stay as they are.
+ */
+static void __init rnse193_mem_reserve(void)
+{
+	memblock_reserve(0x0c7c0000, 0x40000);
+	memblock_reserve(0x09b60000, 0x100000);
+}
+
 static struct sh_machine_vector mv_rnse193 __initmv = {
 	.mv_name	= "Audi RNS-E 193",
 	.mv_setup	= rnse193_setup,
+	.mv_mem_reserve	= rnse193_mem_reserve,
 };

@@ -24,9 +24,10 @@
  *
  * On the 193 it is started by sdk/examples/sdload193 from a card, as
  * RNSE.BIN beside VMLINUX.BIN, and reads the kernel through the chip's
- * own SD host (the card in slot 1 first, then slot 2).  There is no
- * resident loader there (the 193's is on the disc): RETURN held says so,
- * and Linux goes on.  The screen is the kit's 16-bit picture, which the
+ * own SD host (the card in slot 1 first, then slot 2).  RETURN held
+ * goes back to that loader, here and under Linux, as on the 192 (the
+ * kernel keeps off the session and off this program there too:
+ * board-rnse193.c).  The screen is the kit's 16-bit picture, which the
  * kernel takes over as a simple frame buffer (board-rnse193.c).
  *
  * Installed in flash instead (`rnse firmware ... linuxboot-192.bin
@@ -197,8 +198,9 @@ static char *hex(char *p, u32 v)
 
 static int in_session(void)
 {
-    return SESSION[0] == SESSION_MAGIC && SESSION[1] == ~SESSION_MAGIC &&
-           SESSION[2] == 0x8df00000u && SESSION[3] < 2 && SESSION[4] == 1;
+    /* (The kit's own word for it: the loader's place is another on
+     * the 193, whose loader keeps a session too since the kit's v0.4.0.) */
+    return loader_active() && SESSION[0] == SESSION_MAGIC && SESSION[1] == ~SESSION_MAGIC;
 }
 
 /* ---- The faceplate, polled from sd_idle and while waiting ---------- */

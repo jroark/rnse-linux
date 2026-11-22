@@ -58,6 +58,7 @@ RNSE_DISC=$PWD/disc.iso RNSE_LINUX=$PWD/out/VMLINUX.BIN RNSE_BOOT_ROM=$PWD/rom.b
 - `overlay/` (copied over the kernel's tree) and `patches/` (Kconfig and Makefile entries): the board (`overlay/arch/sh/boards/board-rnse.c`), the controls and the way back (`rnse-controls.c`), the screen and the other drivers.
 - `userland/`: `rnse`, one static program (`rnse-gui`, `rnse-radio`, `rnse-play`, `rnse-can`); `rootfs/`: the initramfs's files.
 - `linuxboot/`: the second stage, built with the kit.
+- `tools/canlog.py`: the 193 kernel's log put together again from a log of the CAN bus.
 - `tests/`: the emulator tests (crate `rnse-linux`; `rnse` pinned in `Cargo.toml` and `Cargo.lock`).
 
 A `docs/....md` named in a comment that is not in this repository is in rnse (`docs/hardware.md`, `docs/boot-rom.md`, ...) or, for the kit's own (`docs/custom-firmware.md`, `docs/sd-loader.md`), in rnse-sdk; `sdk/src/...` is the kit's `src/...`.
