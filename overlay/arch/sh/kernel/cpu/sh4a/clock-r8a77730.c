@@ -3,9 +3,9 @@
  * The R8A77730 (Audi RNS-E 193): fixed clocks.
  *
  * Where this chip keeps its frequency control is not known, so nothing
- * is read: the peripheral clock is CONFIG_SH_PCLK_FREQ, 49.95 MHz, the
- * rate the stock software's 1 ms tick implies (12488 counts at a quarter
- * of it; rnse's docs/hardware-193.md, "Clocks and time"), and the bus
+ * is read: the peripheral clock is CONFIG_SH_PCLK_FREQ, 49.848 MHz, the
+ * rate a bench unit's timers count at (12.462 MHz, a quarter of it;
+ * rnse's docs/hardware-193.md, "Clocks and time"), and the bus
  * and module clocks are taken to be the same.  The CPU's rate is only a
  * figure here (the kernel calibrates its delays against the timer).
  */

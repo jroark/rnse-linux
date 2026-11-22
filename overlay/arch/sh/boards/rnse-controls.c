@@ -56,12 +56,12 @@
  * other ports: the faceplate on the chip's serial port at 0xff926000
  * (reset line bit 1 of 0xff909004, left as linuxboot left it), the drive
  * on its ATAPI interface at 0xffc62100 (a register to a 32-bit word,
- * data bytes swapped).  There EJECT is not followed (which of its motor
- * lines opens the display is not yet measured: the kit leaves the key
- * alone too), CD EJECT ejects without folding the display first, as the
- * kit does, and there is no loader to go back to (the 193's is on the
- * disc): RETURN held says so.  Nothing of the 192's flash guard, A/D
- * converter or radio line is touched there.
+ * data bytes swapped), the display's motor on two lines of the port at
+ * 0xff93f000 and its position on the chip's A/D converter, the radio
+ * processor on the serial port at 0xff915000 (its keep-alive: 8a and
+ * 81 [06]).  RETURN held says that there is no way back: the 193's
+ * loader keeps a session too, but this code does not know its place
+ * yet.  Nothing of the 192's flash guard is touched there.
  *
  * Reverse-engineered: docs/hardware.md and docs/linux.md (and rnse's
  * docs/hardware-193.md).
@@ -85,6 +85,12 @@
 #ifdef CONFIG_SH_RNSE193
 #define FP_SCIF		0xff926000	/* the faceplate's serial port */
 #define ATAPI		0xffc62100	/* the drive: register n at +4n */
+#define RADIO193	0xff915000	/* the radio processor's line */
+#define MOTOR193	0xff93f000	/* a port: +4 direction, +8 output, +0xc input */
+#define MOTOR193_OPEN	BIT(18)
+#define MOTOR193_CLOSE	BIT(19)
+#define MOTOR193_ISOPEN	BIT(20)		/* input, low: the display fully open */
+#define ADC193		0xff93c000	/* results at +2n, control at +0x10 */
 #endif
 #define UART3		0x07a30000
 #define UART1		0x07a10000	/* the radio processor's line */
@@ -96,7 +102,12 @@
 
 #define SESSION		0xac7c0000	/* the SD loader's control data */
 #define SESSION_MAGIC	0x53444c31
+/* The loader's place, as the kit's session has it (sdk/src/wayback.c). */
+#ifdef CONFIG_SH_RNSE193
+#define LOADER_BASE	0x09b60000
+#else
 #define LOADER_BASE	0x8df00000
+#endif
 
 #define RETURN_HOLD_MS	2000
 
@@ -149,7 +160,7 @@ static const u8 settings[] = {
 };
 #endif
 
-static void __iomem *uart, *port3, *adc, *ata, *radio;
+static void __iomem *uart, *port3 __maybe_unused, *adc, *ata, *radio __maybe_unused;
 /* (The 192's alone: the 193 has its drive's data and status in its register block.) */
 static void __iomem *ata_data __maybe_unused, *ata_alt __maybe_unused;
 static struct input_dev *input, *keyboard;
@@ -370,7 +381,23 @@ int rnse_adc_read(int input)
 
 	if (input < 0 || input > 6)
 		return -EINVAL;
-	if (IS_ENABLED(CONFIG_SH_RNSE193) || !adc)
+#ifdef CONFIG_SH_RNSE193
+	/* The 193's converter (sdk/src/hw193.c adc_convert): channel n
+	 * converts inputs 0..n, the results 16 bits each from +0. */
+	mutex_lock(&adc_lock);
+	__raw_writew(0x2000 | input, (void __iomem *)ADC193 + 0x10);
+	for (i = 0; i < 1000; i++) {
+		if (__raw_readw((void __iomem *)ADC193 + 0x10) & 0x8000) {
+			v = __raw_readw((void __iomem *)ADC193 + 2 * input) >> 6;
+			break;
+		}
+		udelay(1);
+	}
+	__raw_writew(0, (void __iomem *)ADC193 + 0x10);
+	mutex_unlock(&adc_lock);
+	return v;
+#endif
+	if (!adc)
 		return -ENODEV;
 	mutex_lock(&adc_lock);
 	__raw_writew(0x2000 | input, adc + 8);
@@ -389,33 +416,53 @@ EXPORT_SYMBOL_GPL(rnse_adc_read);
 
 static u16 display_position(void)
 {
-	int v = rnse_adc_read(3);
+	/* The display's position: input 3 on the 192, 4 on the 193. */
+	int v = rnse_adc_read(IS_ENABLED(CONFIG_SH_RNSE193) ? 4 : 3);
 
 	return v < 0 ? 1023 : v;
 }
 
-/* The 193: the display is not run (its motor lines are not measured),
- * and the disc is ejected as it is, as the kit does. */
+/* The 193's motor (sdk/src/hw193.c display_motor; the stock software's
+ * key handler, V575 1050): bit 18 of the port's output opens, bit 19
+ * closes, and input bit 20 is low when the display is fully open. */
+#ifdef CONFIG_SH_RNSE193
+static void motor193(u32 lines)
+{
+	void __iomem *port = (void __iomem *)MOTOR193;
+
+	__raw_writel((__raw_readl(port + 8) & ~(MOTOR193_OPEN | MOTOR193_CLOSE)) | lines, port + 8);
+}
+
 static int display_open(void)
 {
-	if (IS_ENABLED(CONFIG_SH_RNSE193))
-		return 1;
+	return !(__raw_readl((void __iomem *)MOTOR193 + 0xc) & MOTOR193_ISOPEN) || display_position() <= 94;
+}
+
+static void motor_stop(void)
+{
+	motor = STILL;
+	motor193(0);
+}
+#else
+static int display_open(void)
+{
 	return !(__raw_readb(port3) & 0x04) || display_position() <= 94;
 }
 
 static void motor_stop(void)
 {
 	motor = STILL;
-	if (IS_ENABLED(CONFIG_SH_RNSE193))
-		return;
 	__raw_writeb(__raw_readb(port3) & ~0x18, port3);
 }
+#endif
 
 static void motor_run(int way)
 {
-	if (IS_ENABLED(CONFIG_SH_RNSE193))
-		return;
+#ifdef CONFIG_SH_RNSE193
+	motor193(way == OPENING ? MOTOR193_OPEN : MOTOR193_CLOSE);
+#else
 	__raw_writeb((__raw_readb(port3) & ~0x18) | (way == OPENING ? 0x08 : 0x10), port3);
+#endif
 	motor = way;
 	motor_since = moved_at = jiffies;
 	moved_from = display_position();
@@ -437,6 +484,10 @@ static void motor_step(void)
 	}
 	if (time_after(now, moved_at + msecs_to_jiffies(300)) ||
 	    time_after(now, motor_since + msecs_to_jiffies(8000)))
+		motor_stop();
+	/* The 193's stops at its switch on the way open, as the stock
+	 * software's and the kit's. */
+	else if (IS_ENABLED(CONFIG_SH_RNSE193) && motor == OPENING && display_open())
 		motor_stop();
 }
 
@@ -651,6 +702,76 @@ asm(
 "8:	.long	0xb2300001\n"	/* the strobe: port 0, bit 0, uncached */
 "9:	.long	0x0001ffe0\n");
 
+/* The 193's: the same steps with its own RAM (0x88000000-0x90000000),
+ * its watchdog's strobe (bit 0 of the 32-bit port at 0xffc44008, the
+ * other lines kept) and an SH-4A's cache control (both caches on and
+ * emptied).  linuxboot's loader_return is at an address of the lower
+ * half, where the kit runs on the 193: reached once the MMU is off. */
+void rnse_leave193(int status, unsigned long entry, unsigned long stack);
+asm(
+"	.text\n"
+"	.align	2\n"
+"	.global	rnse_leave193\n"
+"rnse_leave193:\n"
+"	mov	r4, r10\n"
+"	mov	r5, r8\n"
+"	mov	r6, r9\n"
+"	mov.l	5f, r1\n"
+"	mov.l	6f, r2\n"
+"	mov.l	8f, r3\n"
+"	mov.l	9f, r7\n"
+"7:	ocbp	@r1\n"
+"	add	#32, r1\n"
+"	mov	r1, r0\n"
+"	and	r7, r0\n"
+"	tst	r0, r0\n"
+"	bf	10f\n"
+"	mov.l	@r3, r0\n"
+"	xor	#1, r0\n"
+"	mov.l	r0, @r3\n"
+"10:	cmp/hs	r2, r1\n"
+"	bf	7b\n"
+"	mov.l	1f, r1\n"	/* MMUCR: TI, AT off */
+"	mov	#4, r0\n"
+"	mov.l	r0, @r1\n"
+"	mov.l	2f, r1\n"	/* CCR */
+"	mov.l	3f, r0\n"
+"	mov.l	r0, @r1\n"
+"	nop\n	nop\n	nop\n	nop\n	nop\n	nop\n	nop\n	nop\n"
+"	mov.l	4f, r0\n"	/* SR: privileged, interrupts masked */
+"	ldc	r0, sr\n"
+"	mov	r9, r15\n"
+"	mov	r10, r4\n"
+"	jmp	@r8\n"
+"	 nop\n"
+"	.align	2\n"
+"1:	.long	0xff000010\n"
+"2:	.long	0xff00001c\n"
+"3:	.long	0x00000909\n"	/* ICE, OCE, and both emptied */
+"4:	.long	0x400000f0\n"
+"5:	.long	0x88000000\n"
+"6:	.long	0x90000000\n"
+"8:	.long	0xffc44008\n"
+"9:	.long	0x0001ffe0\n");
+
+#ifdef CONFIG_SH_RNSE193
+static void return_to_loader(void)
+{
+	void (*leave)(int, unsigned long, unsigned long);
+
+	pr_info("rnse: back to the SD loader\n");
+	motor_stop();
+	local_irq_disable();
+	/* The timers stopped, and every source of the interrupt controller
+	 * masked, as linuxboot handed the unit over. */
+	__raw_writeb(0, (void __iomem *)0xffd80004);
+	__raw_writel(0xffffffff, (void __iomem *)0xff804038);
+	__raw_writel(0xffffffff, (void __iomem *)0xff804108);
+	flush_cache_all();
+	leave = (void *)P2SEGADDR((unsigned long)rnse_leave193);
+	leave(0, return_entry, return_stack);
+}
+#else
 static void return_to_loader(void)
 {
 	void (*leave)(int, unsigned long, unsigned long);
@@ -681,6 +802,7 @@ static void return_to_loader(void)
 	leave = (void *)P2SEGADDR((unsigned long)rnse_leave);
 	leave(0, return_entry, return_stack);
 }
+#endif
 
 /* ---- Rotary typing ---------------------------------------------------- *
  *
@@ -999,31 +1121,69 @@ static void sysfs_setup(void)
 
 /* ---- The radio processor's keep-alive -------------------------------- */
 
-/* The stock software sends the radio processor 81 [06] once a minute,
- * and nothing else regularly; a unit whose main processor sent it
- * nothing (Linux, the SD loader's menu) was restarted into the stock
- * software after about seven minutes.  Sent as sdk/src/radio.c sends it:
- * the transmitter on only for the frame, the acknowledgement not waited
- * for, some 6 ms of the line. */
+/* The stock software sends the radio processor 81 [06] once a minute
+ * (192), and nothing else regularly; a unit whose main processor sent
+ * it nothing (Linux, the SD loader's menu) was restarted into the stock
+ * software after about seven minutes.  The 193's sends 8a every 30 s
+ * and 81 [06] every 60, and a bench 193 sent nothing started again
+ * after thirteen and a half minutes; sent 81 [06] alone, after fifteen;
+ * sent both it stayed up (rnse's docs/hardware-193.md, "Serial links").
+ * Sent as sdk/src/radio.c sends them: the transmitter on only for the
+ * frame, the answer not waited for, some 6 ms of the line. */
 int __weak rnse_radio_send(const u8 *buf, int n)
 {
 	return -ENODEV;
 }
 
+static const u8 frame81[6] = { 0x01, 0x81, 0x00, 0x01, 0x06, 0x76 };
+
+#ifdef CONFIG_SH_RNSE193
+static const u8 frame8a[5] = { 0x01, 0x8a, 0x00, 0x00, 0x74 };
+
+/* The 193's line: the 192's registers four bytes apart (control +8,
+ * transmit +0xc, status +0x10). */
+static void radio193_send(const u8 *frame, int n)
+{
+	void __iomem *r = (void __iomem *)RADIO193;
+	u16 control = __raw_readw(r + 0x08);
+	int i, j;
+
+	__raw_writew(__raw_readw(r + 0x10) & 0xffc7, r + 0x10);
+	__raw_writew((control | 0x0030) & ~0x00c4, r + 0x08);
+	for (i = 0; i < n; i++) {
+		for (j = 0; j < 2000 && (__raw_readw(r + 0x10) & 0x0200); j++)
+			udelay(10);
+		__raw_writeb(frame[i], r + 0x0c);
+	}
+	for (j = 0; j < 2000 && !(__raw_readw(r + 0x10) & 0x0004); j++)
+		udelay(10);
+	__raw_writew(control, r + 0x08);
+}
+
+/* Called every quarter of a minute: 8a at 0, 30, ... s and 81 [06] at
+ * 15, 75, ... s. */
+static bool radio_keepalive(void)
+{
+	static unsigned int quarter;
+
+	if (quarter % 2 == 0)
+		radio193_send(frame8a, sizeof(frame8a));
+	else if (quarter % 4 == 1)
+		radio193_send(frame81, sizeof(frame81));
+	quarter++;
+	return true;
+}
+#define KEEPALIVE_EVERY	(15 * HZ)
+#else
 /* With the line's driver (rnse-uart.c, /dev/ttyRN1) bound the frame goes
  * through it, between user space's frames; false when it has to wait
  * for one to end. */
 static bool radio_keepalive(void)
 {
-	static const u8 frame[6] = { 0x01, 0x81, 0x00, 0x01, 0x06, 0x76 };
 	u16 control;
 	int i, j, r;
 
-	/* (The 193's radio processor is on another port, and whether it
-	 * wants this too is not known: nothing is sent there.) */
-	if (IS_ENABLED(CONFIG_SH_RNSE193))
-		return true;
-	r = rnse_radio_send(frame, sizeof(frame));
+	r = rnse_radio_send(frame81, sizeof(frame81));
 	if (r == -EBUSY)
 		return false;
 	if (r != -ENODEV)
@@ -1035,13 +1195,15 @@ static bool radio_keepalive(void)
 	for (i = 0; i < 6; i++) {
 		for (j = 0; j < 2000 && (__raw_readw(radio + 0x08) & 0x0200); j++)
 			udelay(10);
-		__raw_writew(frame[i], radio + 0x06);
+		__raw_writew(frame81[i], radio + 0x06);
 	}
 	for (j = 0; j < 2000 && !(__raw_readw(radio + 0x08) & 0x0004); j++)
 		udelay(10);	/* the last bit gone: status bit 2 */
 	__raw_writew(control, radio + 0x04);
 	return true;
 }
+#define KEEPALIVE_EVERY	(60 * HZ)
+#endif
 
 static int controls(void *unused)
 {
@@ -1056,7 +1218,7 @@ static int controls(void *unused)
 	return_down = 1;
 	radio_keepalive();
 	while (!kthread_should_stop()) {
-		if (time_after(jiffies, keepalive_at + 60 * HZ) && radio_keepalive())
+		if (time_after(jiffies, keepalive_at + KEEPALIVE_EVERY) && radio_keepalive())
 			keepalive_at = jiffies;
 		fp_poll();
 		motor_step();
@@ -1079,7 +1241,7 @@ static int controls(void *unused)
 			motor_run(display_position() < 500 ? CLOSING : OPENING);
 			break;
 		}
-		if (fp_key(FP_DISPLAY) && !display_down && !IS_ENABLED(CONFIG_SH_RNSE193)) {
+		if (fp_key(FP_DISPLAY) && !display_down) {
 			if (motor != STILL)
 				motor_stop();
 			else
@@ -1148,6 +1310,10 @@ static int __init rnse_controls_init(void)
 	/* On-chip registers: P4, as they are. */
 	uart = (void __iomem *)FP_SCIF;
 	ata = (void __iomem *)ATAPI;
+	/* The motor's two lines: off, and outputs (the kit's display_port_init). */
+	motor193(0);
+	__raw_writel(__raw_readl((void __iomem *)MOTOR193 + 4) | MOTOR193_OPEN | MOTOR193_CLOSE,
+		     (void __iomem *)MOTOR193 + 4);
 #else
 	uart = ioremap(UART3, 0x10);
 	port3 = ioremap(PORT3, 1);
@@ -1188,8 +1354,7 @@ static int __init rnse_controls_init(void)
 	if (IS_ERR(t))
 		return PTR_ERR(t);
 	sysfs_setup();
-	pr_info("rnse: faceplate, %seject controls; return to the loader %s\n",
-		IS_ENABLED(CONFIG_SH_RNSE193) ? "" : "display and ",
+	pr_info("rnse: faceplate, display and eject controls; return to the loader %s\n",
 		in_session() ? "with RETURN held" :
 		from_flash ? "not available (started from flash)" : "not available");
 	return 0;

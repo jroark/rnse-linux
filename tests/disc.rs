@@ -292,7 +292,7 @@ fn linux_boots_from_an_sd_card() {
 
     // The card's start, the kernel from it, the kernel's start, BusyBox
     // and the GUI.
-    until(&mut m, 0, "rnse: Linux on the RNS-E 192 (sd start)", 90).unwrap_or_else(|| panic!("{}: Linux did not come up: {:?}", name, console(&m)));
+    until(&mut m, 0, "rnse: Linux on the Audi RNS-E 192 (sd start)", 90).unwrap_or_else(|| panic!("{}: Linux did not come up: {:?}", name, console(&m)));
     assert_eq!(m.run(6_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
     let text = console(&m);
     let tail = &text[text.len().saturating_sub(600)..];
@@ -403,10 +403,27 @@ fn linux_boots_on_the_193() {
     let entries = vec![rnse::fat::Entry::file("RNSE.BIN", linuxboot), rnse::fat::Entry::file("VMLINUX.BIN", kernel)];
     let card = rnse::fat::card("LINUX", &entries, None).unwrap();
     assert!(m.insert_card(0, rnse::dev::sdhi::Card::from_bytes(card).unwrap()));
+    // RNSE_LINUX_RATIO=n: n CPU cycles to a timer tick's worth of the
+    // peripheral clock (8 is nominal on the 193; 4 is a CPU at half the
+    // pace, as a unit runs memory-heavy code), to see how close the
+    // watchdog comes on a slower unit.
+    if let Some(r) = std::env::var("RNSE_LINUX_RATIO").ok().and_then(|r| r.parse().ok()) {
+        m.set_cpu_ratio(r);
+    }
     let ms = m.cycles_per_ms();
     m.watchdog.longest = 0;
     let console = |m: &Machine| String::from_utf8_lossy(&m.console).into_owned();
 
+    // The kit's SD loader is a menu since v0.4.0: RNSE.BIN is the one
+    // chosen, SELECT runs it (once the loader has looked at the cards).
+    for _ in 0..100 {
+        if m.can().tx.iter().any(|f| f.id == 0x7f8 && f.data[0] == 0x76) { break }
+        assert_eq!(m.run(100 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    }
+    assert_eq!(m.run(500 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    assert!(m.panel_key("SELECT", true));
+    assert_eq!(m.run(200 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    assert!(m.panel_key("SELECT", false));
     // While the card is read: CD EJECT ejects.
     for _ in 0..300 {
         if console(&m).contains("READING VMLINUX.BIN") { break }
@@ -414,10 +431,22 @@ fn linux_boots_on_the_193() {
     }
     assert!(console(&m).contains("READING VMLINUX.BIN"), "{}: {:?}", name, console(&m));
     let ejects = m.atapi().ejects;
+    // (What the kernel has said on CAN so far, should it end early.)
+    let canlog = |m: &mut Machine| {
+        let mut said = Vec::new();
+        for f in m.can().tx.iter().filter(|f| f.id == 0x7fa && f.len >= 2) {
+            said.extend_from_slice(&f.data[1..f.len as usize]);
+        }
+        String::from_utf8_lossy(&said).into_owned()
+    };
     assert!(m.panel_key("CD_EJECT", true));
-    assert_eq!(m.run(300 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let stop = m.run(300 * ms);
+    let said = canlog(&mut m);
+    assert_eq!(stop, Stop::Budget, "{}: {:?}: {:?} {:?}", name, m.cpu.fault, console(&m), said);
     assert!(m.panel_key("CD_EJECT", false));
-    assert_eq!(m.run(300 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let stop = m.run(300 * ms);
+    let said = canlog(&mut m);
+    assert_eq!(stop, Stop::Budget, "{}: {:?}: {:?} {:?}", name, m.cpu.fault, console(&m), said);
     let now = m.atapi().ejects;
     assert_eq!(now, ejects + 1, "{}: CD EJECT while the card is read", name);
 
@@ -439,35 +468,59 @@ fn linux_boots_on_the_193() {
     assert!(text.contains("Booting machvec: Audi RNS-E 193"), "{}: {:?}", name, tail);
     assert!(text.contains("CPU: R8A77730"), "{}: {:?}", name, tail);
     assert!(text.contains("simplefb registered"), "{}: {:?}", name, tail);
+    // linuxboot reported on CAN that it read the kernel (0xb0) and
+    // entered it (0xb1): the only sign of the boot on a 193 unit, whose
+    // screen may be dark and has no serial console.
+    assert!(m.can().tx.iter().any(|f| f.id == 0x7f8 && f.data[0] == 0xb0), "{}: no kernel-read beacon", name);
+    assert!(m.can().tx.iter().any(|f| f.id == 0x7f8 && f.data[0] == 0xb1), "{}: no entering-kernel beacon", name);
     assert!(!text.contains("Kernel panic") && !text.contains("Oops"), "{}: {:?}", name, tail);
     let (_, _, pixels) = m.render();
     assert!(pixels.iter().any(|&p| p != 0), "{}: the screen is dark", name);
     // The watchdog was strobed all the while, through linuxboot's reads,
     // its handover and the kernel's start.
+    eprintln!("{}: longest pause of the watchdog strobe {} ms, ending at {} ms, PC {:08x}", name,
+        m.watchdog.longest / ms, m.watchdog.longest_end / ms, m.watchdog.longest_pc);
     assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
 
     // The controls under Linux (rnse-controls.c): the faceplate answered,
     // CD EJECT ejects (a disc put back in first), RETURN held says there
     // is no loader and Linux goes on, and the knob types into the shell.
-    assert!(text.contains("rnse: faceplate, eject controls; return to the loader not available"), "{}: {:?}", name, tail);
+    assert!(text.contains("rnse: faceplate, display and eject controls; return to the loader with RETURN held"), "{}: {:?}", name, tail);
+    // The kernel's log went out on CAN as well (frames 0x7FA, a counter
+    // and seven characters): what a bench 193 has for a console.
+    let mut said = Vec::new();
+    for f in m.can().tx.iter().filter(|f| f.id == 0x7fa && f.len >= 2) {
+        said.extend_from_slice(&f.data[1..f.len as usize]);
+    }
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert!(said.contains("Linux version") && said.contains("Audi RNS-E 193"), "{}: the log on CAN: {:?}", name, &said[..said.len().min(400)]);
+    // The radio processor has had the 193's keep-alive, 8a.
+    assert!(m.radio.seen.keys().any(|&(cmd, _)| cmd == 0x8a), "{}: {:?}", name, m.radio.seen);
     let press = |m: &mut Machine, key: &str, hold: u64| {
         assert!(m.panel_key(key, true));
         assert_eq!(m.run(hold * ms), Stop::Budget, "{:?}", m.cpu.fault);
         assert!(m.panel_key(key, false));
     };
+    // The display key folds the display open and shut again (the 193's
+    // motor lines and its open switch).
+    let was = m.display_pos();
+    press(&mut m, "EJECT", 200);
+    assert_eq!(m.run(8_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let open = m.display_pos();
+    press(&mut m, "EJECT", 200);
+    assert_eq!(m.run(8_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    let shut = m.display_pos();
+    assert!(was.abs_diff(open) > 500 && open.abs_diff(shut) > 500, "{}: the display key under Linux: {} -> {} -> {}", name, was, open, shut);
     m.atapi().insert(Some(vec![0u8; 64 * 2048]));
     assert_eq!(m.run(2_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
     let ejects = m.atapi().ejects;
     let at = m.console.len();
     press(&mut m, "CD_EJECT", 200);
-    until(&mut m, at, "rnse: disc ejected", 10).unwrap_or_else(|| panic!("{}: CD EJECT under Linux: {:?}", name, console(&m)));
+    until(&mut m, at, "rnse: disc ejected", 15).unwrap_or_else(|| panic!("{}: CD EJECT under Linux: {:?}", name, console(&m)));
     let now = m.atapi().ejects;
     assert_eq!(now, ejects + 1, "{}: CD EJECT under Linux", name);
-    let at = m.console.len();
-    press(&mut m, "RETURN", 2_500);
-    assert_eq!(m.run(500 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
-    let text = console(&m);
-    assert!(text.contains("return to the SD loader is not available here"), "{}: {:?}", name, &text[text.len().saturating_sub(400)..]);
+    assert!(m.display_pos() <= 94, "{}: the disc came out behind a display at {}", name, m.display_pos());
+    let _ = at;
     // A command typed with the knob, its answer in the kernel's log.
     const RING: &str = "abcdefghijklmnopqrstuvwxyz0123456789-./_|>&;=*~$'\"<()[]{}!?#@%+:,\\^`ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let mut cur = 0;
@@ -487,6 +540,14 @@ fn linux_boots_on_the_193() {
     press(&mut m, "SOFT_BR", 100);
     until(&mut m, at, "rotary", 10).unwrap_or_else(|| panic!("{}: the knob's command did not run: {:?}", name, &console(&m)[at..]));
     assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
+    // RETURN held for two seconds: back to the SD loader on the disc,
+    // which linuxboot's loader_return restores (the kernel has kept its
+    // hands off both), and the loader is itself again.
+    let at = m.console.len();
+    press(&mut m, "RETURN", 2_500);
+    until(&mut m, at, "rnse sdk: sdload193", 20).unwrap_or_else(|| panic!("{}: RETURN held did not go back to the loader: {:?}", name, &console(&m)[at..]));
+    assert_eq!(m.run(3_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    assert!(m.can().tx.iter().any(|f| f.id == 0x7f8 && f.data[0] == 0x7a && f.data[1] == 0), "{}: the loader did not say that it is back", name);
 }
 
 /// The SD path to Linux (as `linux_boots_from_an_sd_card`) with a card
@@ -662,7 +723,7 @@ fn linux_is_installed_in_flash() {
     // when it jumped to the reset is lost on a unit too.
     let before = (m.cpu.cache.trouble.stale_fetches, m.cpu.cache.trouble.dirty_discarded);
     eprintln!("cache trouble when linuxboot starts: {:?}", m.cpu.cache.trouble);
-    let up = until(&mut m, started, "rnse: Linux on the RNS-E 192 (flash start)", 60).unwrap_or_else(|| panic!("Linux did not come up from flash: {:?}", tail(&m)));
+    let up = until(&mut m, started, "rnse: Linux on the Audi RNS-E 192 (flash start)", 60).unwrap_or_else(|| panic!("Linux did not come up from flash: {:?}", tail(&m)));
     until(&mut m, up, "rnse: this start counted as one that worked", 30).unwrap_or_else(|| panic!("the GUI did not call the start healthy: {:?}", tail(&m)));
     let text = String::from_utf8_lossy(&m.console).into_owned();
     assert!(text[started..].contains("rnse.flash=1"), "{:?}", tail(&m));
@@ -691,7 +752,7 @@ fn linux_is_installed_in_flash() {
     // A power cycle: Linux again, nothing erased.
     m.cpu.reset();
     let again = until(&mut m, up, "rnse sdk: linuxboot from flash", 30).expect("not started again");
-    until(&mut m, again, "rnse: Linux on the RNS-E 192 (flash start)", 60).expect("Linux did not come up again");
+    until(&mut m, again, "rnse: Linux on the Audi RNS-E 192 (flash start)", 60).expect("Linux did not come up again");
     assert_eq!(m.board.flash_ctl.erased_sectors, erased, "something was erased");
 }
 
