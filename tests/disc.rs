@@ -393,14 +393,54 @@ fn linux_boots_from_an_sd_card() {
 #[test]
 fn linux_boots_on_the_193() {
     use rnse::board::Model;
-    let Some(image) = disc() else { return };
-    let Some(kernel) = std::env::var_os("RNSE_LINUX_193") else { return };
+    let required = std::env::var_os("RNSE_REQUIRE_193").is_some();
+    let Some(image) = disc() else { assert!(!required, "set RNSE_DISC"); return };
+    let Some(kernel) = std::env::var_os("RNSE_LINUX_193") else {
+        assert!(!required, "set RNSE_LINUX_193"); return
+    };
     let kernel = std::fs::read(kernel).expect("RNSE_LINUX_193 is not readable");
     let sdk = kit();
-    let Some((mut m, name, _)) = started_by_stock_software(&image, Model::Rnse193, "sdload193") else { return };
-    if sdk_example(&image, Model::Rnse193, &own("linuxboot")).is_none() { return }
+    let Some((mut m, name, _)) = started_by_stock_software(&image, Model::Rnse193, "sdload193") else {
+        assert!(!required, "need a 193 firmware disc and an SH cross compiler"); return
+    };
+    if sdk_example(&image, Model::Rnse193, &own("linuxboot")).is_none() {
+        assert!(!required, "linuxboot build skipped"); return
+    }
     let linuxboot = std::fs::read(sdk.join("out/linuxboot-193.bin")).unwrap();
-    let entries = vec![rnse::fat::Entry::file("RNSE.BIN", linuxboot), rnse::fat::Entry::file("VMLINUX.BIN", kernel)];
+    let script = br#"exec >/dev/kmsg 2>&1
+rnse-can send 7f0#0102 || exit 1
+echo "193-can-rx $(rnse-can dump 1)"
+for i in 1 2 3 4 5; do
+    [ -f /media/sd1/SLOT.TXT ] && break
+    sleep 1
+done
+echo "193-slot $(cat /media/sd1/SLOT.TXT)"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if mount -t iso9660 -o ro /dev/sr0 /media/cd; then
+        signature=$(od -An -N16 -tx1 /media/cd/LOADING.KWI | tr -d ' \n')
+        echo "193-disc-read $signature"
+        break
+    fi
+    sleep 1
+done
+rnse-can dump | while read id rest; do
+    [ "$id" = 711 ] || continue
+    echo 193-optical-reader
+    while dd if=/dev/sr0 of=/dev/null bs=2048 2>/dev/null; do :; done
+    echo 193-optical-removed
+    break
+done
+"#;
+    let pcm: Vec<i16> = (0..4 * 44100).flat_map(|frame| {
+        [440.0, 880.0].map(|hz| ((frame as f64 * hz * std::f64::consts::TAU / 44100.0).sin() * 8000.0) as i16)
+    }).collect();
+    let entries = vec![
+        rnse::fat::Entry::file("RNSE.BIN", linuxboot),
+        rnse::fat::Entry::file("VMLINUX.BIN", kernel),
+        rnse::fat::Entry::file("AUTORUN.SH", script.to_vec()),
+        rnse::fat::Entry::file("TONE.WAV", rnse::wav::encode(44100, 2, &pcm)),
+        rnse::fat::Entry::file("TONES.MP3", include_bytes!("data/tones.mp3").to_vec()),
+    ];
     let card = rnse::fat::card("LINUX", &entries, None).unwrap();
     assert!(m.insert_card(0, rnse::dev::sdhi::Card::from_bytes(card).unwrap()));
     // RNSE_LINUX_RATIO=n: n CPU cycles to a timer tick's worth of the
@@ -450,6 +490,9 @@ fn linux_boots_on_the_193() {
     let now = m.atapi().ejects;
     assert_eq!(now, ejects + 1, "{}: CD EJECT while the card is read", name);
 
+    m.atapi().insert(Some(image.clone()));
+    let second = rnse::fat::card("SECOND", &[rnse::fat::Entry::file("SLOT.TXT", b"other slot".to_vec())], None).unwrap();
+    assert!(m.insert_card(1, rnse::dev::sdhi::Card::from_bytes(second).unwrap()));
     // The kernel's start, to BusyBox's.
     until(&mut m, 0, "Run /init as init process", 120).unwrap_or_else(|| panic!("{}: Linux did not come up: {:?}", name, console(&m)));
     assert_eq!(m.run(5_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
@@ -494,13 +537,76 @@ fn linux_boots_on_the_193() {
     }
     let said = String::from_utf8_lossy(&said).into_owned();
     assert!(said.contains("Linux version") && said.contains("Audi RNS-E 193"), "{}: the log on CAN: {:?}", name, &said[..said.len().min(400)]);
-    // The radio processor has had the 193's keep-alive, 8a.
-    assert!(m.radio.seen.keys().any(|&(cmd, _)| cmd == 0x8a), "{}: {:?}", name, m.radio.seen);
+    let keepalives = m.radio.seen.get(&(0x8a, 0xff)).copied().unwrap_or(0);
     let press = |m: &mut Machine, key: &str, hold: u64| {
         assert!(m.panel_key(key, true));
         assert_eq!(m.run(hold * ms), Stop::Budget, "{:?}", m.cpu.fault);
         assert!(m.panel_key(key, false));
     };
+    until(&mut m, 0, "rnse-gui: ready", 60).expect("193 GUI did not start");
+    assert_eq!(m.radio.source, 3, "GUI could not select tuner");
+    until(&mut m, 0, "193-disc-read", 45).unwrap_or_else(|| panic!("{}", console(&m)));
+    let iso = fw::Iso::new(&image).unwrap();
+    let signature: String = iso.file("LOADING.KWI").unwrap()[..16].iter()
+        .map(|byte| format!("{byte:02x}")).collect();
+    assert!(console(&m).contains(&format!("193-disc-read {signature}")));
+    assert!(console(&m).contains("193-slot other slot"));
+    assert!(m.can().tx.iter().any(|f| f.id == 0x7f0 && f.data[..2] == [1, 2]));
+    assert!(console(&m).contains("193-can-rx 271 [1] 03"));
+    assert!(canlog(&mut m).contains("193-disc-read"), "CAN console stopped after can0 opened");
+    let (width, height, pixels) = m.render();
+    assert_eq!((width, height), (800, 480));
+    assert!(pixels.chunks_exact(3).any(|p| p == [107, 33, 0]), "no highlighted menu row on the LCD");
+    press(&mut m, "RADIO", 100);
+    assert_eq!(m.run(300 * ms), Stop::Budget);
+    let tuned = m.radio.frequency.unwrap();
+    let volume = m.radio.volume;
+    assert!(m.panel_knob("main", 1));
+    assert!(m.panel_knob("volume", 1));
+    assert_eq!(m.run(1_000 * ms), Stop::Budget);
+    assert_ne!(m.radio.frequency, Some(tuned));
+    assert_ne!(m.radio.volume, volume);
+    m.eject_card(1);
+    until(&mut m, 0, "mmc1: card 0001 removed", 10).expect("slot 1 removal");
+
+    press(&mut m, "MEDIA", 100);
+    assert_eq!(m.run(500 * ms), Stop::Budget);
+    press(&mut m, "SELECT", 100);
+    assert_eq!(m.run(500 * ms), Stop::Budget);
+    press(&mut m, "SELECT", 100);
+    for track in ["PCM", "MP3"] {
+        if track == "MP3" {
+            press(&mut m, "NEXT", 100);
+            assert_eq!(m.run(300 * ms), Stop::Budget);
+        }
+        for _ in 0..50 {
+            if m.cpu.io.navi.as_ref().unwrap().audio.running { break }
+            assert_eq!(m.run(100 * ms), Stop::Budget);
+        }
+        assert!(m.cpu.io.navi.as_ref().unwrap().audio.running, "SSI playback did not start: {}", console(&m));
+        assert_eq!(m.radio.source, rnse::dev::radio::Radio::SOURCE_DECODER);
+        m.speaker = Some(Vec::new());
+        assert_eq!(m.run(2_000 * ms), Stop::Budget);
+        let samples = m.speaker.take().unwrap();
+        assert!(samples.len() >= 2 * 44_100);
+        if let Some(path) = std::env::var_os("RNSE_LINUX_WAV") {
+            std::fs::write(std::path::Path::new(&path).with_extension(format!("{track}.wav")), rnse::wav::encode(44_100, 2, &samples)).unwrap();
+        }
+        let heard = &samples[8820..];
+        let seconds = heard.len() as f64 / 88_200.0;
+        for (channel, expected) in [(0, 440.0), (1, 880.0)] {
+            let crossings = heard.chunks_exact(2).zip(heard[2..].chunks_exact(2))
+                .filter(|(a, b)| a[channel] < 0 && b[channel] >= 0).count();
+            let hz = crossings as f64 / seconds;
+            assert!((hz - expected).abs() < 3.0, "{track} channel {channel} played {hz} Hz");
+        }
+    }
+    press(&mut m, "INFO", 100);
+    assert_eq!(m.run(500 * ms), Stop::Budget);
+    assert!(m.panel_knob("main", 5));
+    assert_eq!(m.run(300 * ms), Stop::Budget);
+    press(&mut m, "SELECT", 100);
+    until(&mut m, 0, "rnse-gui: shell", 10).expect("rotary shell");
     // The display key folds the display open and shut again (the 193's
     // motor lines and its open switch).
     let was = m.display_pos();
@@ -511,8 +617,8 @@ fn linux_boots_on_the_193() {
     assert_eq!(m.run(8_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
     let shut = m.display_pos();
     assert!(was.abs_diff(open) > 500 && open.abs_diff(shut) > 500, "{}: the display key under Linux: {} -> {} -> {}", name, was, open, shut);
-    m.atapi().insert(Some(vec![0u8; 64 * 2048]));
-    assert_eq!(m.run(2_000 * ms), Stop::Budget, "{}: {:?}", name, m.cpu.fault);
+    m.can_send_cyclic(rnse::dev::hcan::Frame::new(0x711, &[1]), 100);
+    until(&mut m, 0, "193-optical-reader", 10).expect("start optical reads before eject");
     let ejects = m.atapi().ejects;
     let at = m.console.len();
     press(&mut m, "CD_EJECT", 200);
@@ -520,7 +626,7 @@ fn linux_boots_on_the_193() {
     let now = m.atapi().ejects;
     assert_eq!(now, ejects + 1, "{}: CD EJECT under Linux", name);
     assert!(m.display_pos() <= 94, "{}: the disc came out behind a display at {}", name, m.display_pos());
-    let _ = at;
+    until(&mut m, at, "193-optical-removed", 20).expect("optical reader completed after eject");
     // A command typed with the knob, its answer in the kernel's log.
     const RING: &str = "abcdefghijklmnopqrstuvwxyz0123456789-./_|>&;=*~$'\"<()[]{}!?#@%+:,\\^`ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let mut cur = 0;
@@ -540,6 +646,10 @@ fn linux_boots_on_the_193() {
     press(&mut m, "SOFT_BR", 100);
     until(&mut m, at, "rotary", 10).unwrap_or_else(|| panic!("{}: the knob's command did not run: {:?}", name, &console(&m)[at..]));
     assert!(m.watchdog.longest < 60 * ms, "{}: the watchdog went {} ms without a strobe", name, m.watchdog.longest / ms);
+    press(&mut m, "INFO", 100);
+    until(&mut m, at, "rnse-gui: back", 10).expect("INFO returns to GUI");
+    assert!(m.radio.seen.get(&(0x8a, 0xff)).copied().unwrap_or(0) > keepalives,
+            "Linux did not renew the radio keep-alive");
     // RETURN held for two seconds: back to the SD loader on the disc,
     // which linuxboot's loader_return restores (the kernel has kept its
     // hands off both), and the loader is itself again.

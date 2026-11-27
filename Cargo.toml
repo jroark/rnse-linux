@@ -9,12 +9,12 @@
 name = "rnse-linux"
 version = "0.1.0"
 edition = "2021"
-description = "Tests of Linux for the RNS-E 192 on the rnse emulator"
+description = "Tests of Linux for the RNS-E 192 and 193 on the rnse emulator"
 license = "GPL-2.0-only"
 publish = false
 
 [dev-dependencies]
-rnse = { git = "https://github.com/jroark/rnse", rev = "0735724f7963e1871b801efcbce6dfb38a72b9bb" }
+rnse = { git = "https://github.com/jroark/rnse", rev = "965cd97ec83be8ec0f39d8fe6acab3a235e1c89d" }
 
 [profile.release]
 opt-level = 3
