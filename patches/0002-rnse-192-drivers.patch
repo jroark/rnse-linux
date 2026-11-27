@@ -7,7 +7,7 @@ diff -ru a/drivers/ata/Kconfig b/drivers/ata/Kconfig
  
 +config PATA_RNSE
 +	bool "Audi RNS-E 192 CD/DVD drive"
-+	depends on SH_RNSE
++	depends on SH_RNSE || SH_RNSE193
 +	help
 +	  The ATAPI CD/DVD drive of the Audi RNS-E 192, by programmed I/O.
 +
@@ -79,7 +79,7 @@ diff -ru a/drivers/net/can/Kconfig b/drivers/net/can/Kconfig
  
 +config CAN_RNSE_HCAN2
 +	bool "Audi RNS-E 192 CAN controller (HCAN2)"
-+	depends on SH_RNSE
++	depends on SH_RNSE || SH_RNSE193
 +	help
 +	  The HCAN2-like CAN controller of the Audi RNS-E 192, on the car's
 +	  infotainment bus at 100 kbit/s.
@@ -104,7 +104,7 @@ diff -ru a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
  
 +config SERIAL_RNSE
 +	bool "Audi RNS-E 192 companion chip serial channels"
-+	depends on SH_RNSE
++	depends on SH_RNSE || SH_RNSE193
 +	select SERIAL_CORE
 +	help
 +	  The serial channel of the Audi RNS-E 192's companion chip that

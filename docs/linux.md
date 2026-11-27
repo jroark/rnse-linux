@@ -458,7 +458,7 @@ program, built with `../rnse-sdk/build.sh 193 ./linuxboot`) reads
 `VMLINUX.BIN` beside it through the chip's own SD host and enters it.
 
 On the emulator (`tests/disc.rs` `linux_boots_on_the_193`, with
-`RNSE_LINUX_193`) it comes up to a BusyBox shell on the screen: the
+`RNSE_LINUX_193`) it starts the faceplate GUI and a BusyBox shell: the
 kernel finds its R8A77730 (by its PRR, 0x412: its PVR, 0x10300700, is
 the SH7785's), 128 MiB, the 193's 32 KiB four-way caches, a 1 ms tick
 from timer unit 0, and takes the kit's picture over as its frame buffer.
@@ -509,14 +509,13 @@ What it takes:
 - **An SH-4A in the emulator**: the kernel built for one uses PREFI,
   SYNCO, ICBI, MOVLI.L/MOVCO.L (its atomic operations) and MOVUA.L;
   rnse's 193 takes them.
-- **Its own inittab** (`rootfs-193/etc/inittab`): a shell on the
-  screen's first console; the 192's GUI and drivers are not there yet.
+- **Its own inittab** (`rootfs-193/etc/inittab`): the GUI on tty1 and the
+  rotary shell on tty2. INFO returns from the shell to the GUI.
 
 - **The controls** (`rnse-controls.c`, the 192's driver, now for both):
   a kernel thread answers the faceplate on the chip's serial port at
   0xff926000 every 10 ms (with the 193's settings, `sdk/src/hw193.c`),
-  CD EJECT ejects the disc through the drive's ATAPI registers at
-  0xffc62100 (allowing removal first, as the kit does on the unit), the
+  CD EJECT ejects the disc through the Linux optical block driver, the
   keys and knobs go to the input devices and the knob types into the
   shell ("Rotary typing").  EJECT, the display key, folds the display
   open and shut: bit 18 of the port at 0xff93f008 opens and bit 19
@@ -544,6 +543,13 @@ keep-alive, folds the display with its key, presses CD EJECT under
 Linux, types `echo rotary>/dev/kmsg` with the knob into the shell, and
 holds RETURN to find the loader on the screen again.
 
-Not yet: the SD host, the CD drive as a block device, a CAN network
-device, the radio link beyond its keep-alive, sound and the GUI.  This
-build has not been run on a 193.
+The two SD sockets share an SDHI controller. Linux presents each socket as
+an MMC host and mounts FAT cards read-only under `/media/sd0` and
+`/media/sd1`. The ATAPI driver exposes the optical drive as `/dev/sr0`.
+SocketCAN uses `can0` alongside the kernel CAN log. The radio processor's
+serial port carries tuning, source selection, volume and the keep-alives.
+
+The GUI draws on the 800 × 480 framebuffer and plays WAV and MP3 through
+the ALSA SSI playback device at 44.1 kHz in stereo. The emulator test
+captures both channels and checks each tone independently. This driver
+set has only been exercised in emulation.

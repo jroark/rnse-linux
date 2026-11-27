@@ -762,6 +762,8 @@ static void return_to_loader(void)
 	pr_info("rnse: back to the SD loader\n");
 	motor_stop();
 	local_irq_disable();
+	rnse_media_quiesce();
+	rnse_can_quiesce();
 	/* The timers stopped, and every source of the interrupt controller
 	 * masked, as linuxboot handed the unit over. */
 	__raw_writeb(0, (void __iomem *)0xffd80004);
@@ -1142,12 +1144,15 @@ static const u8 frame8a[5] = { 0x01, 0x8a, 0x00, 0x00, 0x74 };
 
 /* The 193's line: the 192's registers four bytes apart (control +8,
  * transmit +0xc, status +0x10). */
-static void radio193_send(const u8 *frame, int n)
+static int radio193_send(const u8 *frame, int n)
 {
 	void __iomem *r = (void __iomem *)RADIO193;
-	u16 control = __raw_readw(r + 0x08);
-	int i, j;
+	u16 control;
+	int i, j, sent = rnse_radio_send(frame, n);
 
+	if (sent != -ENODEV)
+		return sent;
+	control = __raw_readw(r + 0x08);
 	__raw_writew(__raw_readw(r + 0x10) & 0xffc7, r + 0x10);
 	__raw_writew((control | 0x0030) & ~0x00c4, r + 0x08);
 	for (i = 0; i < n; i++) {
@@ -1158,6 +1163,7 @@ static void radio193_send(const u8 *frame, int n)
 	for (j = 0; j < 2000 && !(__raw_readw(r + 0x10) & 0x0004); j++)
 		udelay(10);
 	__raw_writew(control, r + 0x08);
+	return 0;
 }
 
 /* Called every quarter of a minute: 8a at 0, 30, ... s and 81 [06] at
@@ -1166,10 +1172,10 @@ static bool radio_keepalive(void)
 {
 	static unsigned int quarter;
 
-	if (quarter % 2 == 0)
-		radio193_send(frame8a, sizeof(frame8a));
-	else if (quarter % 4 == 1)
-		radio193_send(frame81, sizeof(frame81));
+	if (quarter % 2 == 0 && radio193_send(frame8a, sizeof(frame8a)))
+		return false;
+	if (quarter % 4 == 1 && radio193_send(frame81, sizeof(frame81)))
+		return false;
 	quarter++;
 	return true;
 }

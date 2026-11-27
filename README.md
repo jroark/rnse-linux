@@ -1,6 +1,6 @@
 # rnse-linux
 
-Linux for the Audi RNS-E 192 (8P0 035 192): a 6.18 kernel with board
+The Audi RNS-E 192 (8P0 035 192) runs a 6.18 kernel with board
 support and drivers for the screen, the faceplate, the fold-down display,
 CAN, the CD drive, the SD cards and sound (through the card processors),
 the radio processor's line, the A/D converter, flash (read only) and the
@@ -19,6 +19,19 @@ git clone https://github.com/jroark/rnse-sdk ../rnse-sdk
 ./build.sh                                  # out/VMLINUX.BIN (downloads pinned; builds in Docker)
 sh ../rnse-sdk/build.sh 192 ./linuxboot     # ../rnse-sdk/out/linuxboot-192.bin
 RNSE_DISC=$PWD/disc.iso RNSE_LINUX=$PWD/out/VMLINUX.BIN cargo test --release -- --nocapture
+```
+
+The RNS-E 193 build boots into the faceplate GUI from SD. Its board
+drivers support both SD slots, the optical drive, CAN, the radio and
+stereo playback. To reproduce the emulator run, use a stock firmware
+ISO containing the 193 variant (tested with V575), the emulator revision
+in Cargo.lock and an SDK with the 193 loader return path (tested with
+`2a0ba8e`). Set `RNSE_SDK` and `RNSE_EMU` if the checkouts are outside
+the default sibling directories `../rnse-sdk` and `../rnse`.
+
+```sh
+RNSE_UNIT=193 ./build.sh
+RNSE_DISC=/absolute/path/to/firmware.iso tools/test-193.sh
 ```
 
 No kernel source, firmware or data is included: the kernel, the

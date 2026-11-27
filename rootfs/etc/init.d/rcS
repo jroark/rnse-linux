@@ -26,9 +26,11 @@ HELP
 # tests and the bench (the same trust as the SD loader's RNSE.BIN).
 (
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        for d in /dev/rnsesd0p1 /dev/rnsesd0 /dev/rnsesd1p1 /dev/rnsesd1; do
+        prefix=/dev/rnsesd
+        [ -d /sys/class/mmc_host/mmc0 ] && prefix=/dev/mmcblk
+        for d in "${prefix}0p1" "${prefix}0" "${prefix}1p1" "${prefix}1"; do
             [ -b $d ] || continue
-            m=/media/sd${d#/dev/rnsesd}; m=${m%p1}
+            m=/media/sd${d#"$prefix"}; m=${m%p1}
             grep -q " $m " /proc/mounts || mount -t vfat -o ro,shortname=mixed $d $m 2>/dev/null
             if [ -f $m/AUTORUN.SH ]; then
                 echo "rnse: running $m/AUTORUN.SH"

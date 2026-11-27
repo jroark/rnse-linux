@@ -133,7 +133,15 @@ int radio_source(int source, int volume)
 {
 	uint8_t d[9] = { 0x08, source, volume, 0, 0, 0, 0, 0x01, 0x03 }, a[4];
 
-	return radio_command(0x81, d, 9, a, sizeof a) < 0 ? -1 : 0;
+	if (radio_command(0x81, d, 9, a, sizeof a) < 0)
+		return -1;
+	if (access("/sys/devices/platform/rnse193-ssi", F_OK) == 0 &&
+	    (source == RADIO_DECODER || source == RADIO_TUNER)) {
+		uint8_t route[] = { 0x0a, source == RADIO_DECODER ? 0x0d : 2 };
+
+		return radio_command(0x81, route, sizeof route, a, sizeof a) < 0 ? -1 : 0;
+	}
+	return 0;
 }
 
 int radio_volume(int volume)

@@ -1,5 +1,5 @@
-/* rnse-gui: a plain user interface for Linux on the Audi RNS-E 192, on
- * the 400x235 screen and run with the faceplate alone.
+/* rnse-gui: a 400x235 logical canvas on both RNS-E generations,
+ * operated with the faceplate alone.
  *
  *   select knob       up and down a list         SELECT     open, do
  *   RETURN (short)    back                       volume     the amplifier's volume
@@ -15,7 +15,8 @@
  * is little-endian on a big-endian bus, so pixel N is the byte at N ^ 3
  * of video memory; the picture is drawn in RAM and copied a word at a
  * time with its bytes turned round.  The letters are the console's own
- * font, asked of the kernel (KDFONTOP).
+ * font, asked of the kernel (KDFONTOP). The 193 uses a native RGB555
+ * surface with two pixels per logical column and a padded scanline.
  *
  * Started from flash, the program tells the kernel after its first
  * picture and ten seconds that this start worked (/sys/kernel/rnse/
@@ -24,6 +25,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -38,6 +40,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <linux/fb.h>
+#include <linux/cdrom.h>
 #include <linux/input.h>
 #include <linux/kd.h>
 #include <linux/vt.h>
@@ -53,7 +56,8 @@ enum { BLACK, WHITE, ORANGE, GREY, DARK, RED, GREEN, SELECTED };
 
 static uint8_t canvas[H][W];
 static uint8_t *vram;
-static int stride, fb_ok;
+static int stride, fb_ok, rgb555;
+static uint16_t colours[8];
 static uint8_t font[256][8];
 static int font_ok;
 
@@ -67,23 +71,33 @@ static void fb_setup(void)
 	struct fb_fix_screeninfo fix;
 	uint16_t r[8], g[8], b[8];
 	struct fb_cmap cmap = { 0, 8, r, g, b, NULL };
+	size_t page_offset;
 	int fd = open("/dev/fb0", O_RDWR), i;
 
 	if (fd < 0)
 		return;
 	if (ioctl(fd, FBIOGET_VSCREENINFO, &var) || ioctl(fd, FBIOGET_FSCREENINFO, &fix))
-		return;
+		goto done;
 	stride = fix.line_length;
-	vram = mmap(NULL, fix.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	page_offset = fix.smem_start % sysconf(_SC_PAGESIZE);
+	vram = mmap(NULL, page_offset + fix.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (vram == MAP_FAILED)
-		return;
+		goto done;
+	vram += page_offset;
 	for (i = 0; i < 8; i++) {
+		colours[i] = (rgb[i][0] >> 3) << 10 | (rgb[i][1] >> 3) << 5 | (rgb[i][2] >> 3);
 		r[i] = rgb[i][0] * 257;
 		g[i] = rgb[i][1] * 257;
 		b[i] = rgb[i][2] * 257;
 	}
-	ioctl(fd, FBIOPUTCMAP, &cmap);
-	fb_ok = var.xres >= W && var.yres >= H && var.bits_per_pixel == 8;
+	rgb555 = var.bits_per_pixel == 16 && var.red.offset == 10 &&
+		var.green.offset == 5 && var.blue.offset == 0 &&
+		var.xres == W * 2 && var.yres == 480 && stride >= W * 4;
+	if (var.bits_per_pixel == 8)
+		ioctl(fd, FBIOPUTCMAP, &cmap);
+	fb_ok = rgb555 || (var.xres >= W && var.yres >= H && var.bits_per_pixel == 8);
+done:
+	close(fd);
 }
 
 static void present(void)
@@ -92,6 +106,18 @@ static void present(void)
 
 	if (!fb_ok)
 		return;
+	if (rgb555) {
+		for (y = 0; y < 480; y++) {
+			uint16_t *row = (uint16_t *)(vram + y * stride);
+			const uint8_t *src = canvas[y * H / 480];
+
+			for (x = 0; x < W; x++) {
+				row[2 * x] = colours[src[x]];
+				row[2 * x + 1] = colours[src[x]];
+			}
+		}
+		return;
+	}
 	for (y = 0; y < H; y++) {
 		uint32_t *to = (uint32_t *)(vram + y * stride);
 		const uint8_t *p = canvas[y];
@@ -340,16 +366,28 @@ static int mounted(const char *where)
 	return 0;
 }
 
+static const char *sd_name(void)
+{
+	return access("/sys/class/mmc_host/mmc0", F_OK) == 0 ? "mmcblk" : "rnsesd";
+}
+
+static int card_present(int slot)
+{
+	char path[48];
+
+	snprintf(path, sizeof path, "/sys/block/%s%d", sd_name(), slot);
+	return access(path, F_OK) == 0;
+}
+
 static void automount(void)
 {
 	static const char *const at[] = { "/media/sd0", "/media/sd1" };
-	char dev[32], sys[48];
+	char dev[32];
 	struct stat st;
 	int i;
 
 	for (i = 0; i < 2; i++) {
-		snprintf(sys, sizeof sys, "/sys/block/rnsesd%d", i);
-		if (stat(sys, &st)) {
+		if (!card_present(i)) {
 			if (mounted(at[i]))
 				umount2(at[i], MNT_DETACH);	/* the card has gone */
 			continue;
@@ -358,18 +396,23 @@ static void automount(void)
 			continue;
 		mkdir("/media", 0755);
 		mkdir(at[i], 0755);
-		snprintf(dev, sizeof dev, "/dev/rnsesd%dp1", i);
+		snprintf(dev, sizeof dev, "/dev/%s%dp1", sd_name(), i);
 		if (stat(dev, &st))
-			snprintf(dev, sizeof dev, "/dev/rnsesd%d", i);
+			snprintf(dev, sizeof dev, "/dev/%s%d", sd_name(), i);
 		mount(dev, at[i], "vfat", MS_RDONLY, "shortname=mixed");
 	}
 }
 
 static int disc_in(void)
 {
-	char buf[32];
+	int fd = open("/dev/sr0", O_RDONLY | O_NONBLOCK);
+	int status;
 
-	return read_file("/sys/block/sr0/size", buf, sizeof buf) > 0 && atol(buf) > 0;
+	if (fd < 0)
+		return 0;
+	status = ioctl(fd, CDROM_DRIVE_STATUS, CDSL_CURRENT);
+	close(fd);
+	return status == CDS_DISC_OK;
 }
 
 static int disc_mount(void)
@@ -495,6 +538,8 @@ static void media_read(void)
 
 		if (disc_in())
 			disc_mount();
+		else if (mounted("/media/cd"))
+			umount2("/media/cd", MNT_DETACH);
 		for (i = 0; i < 3; i++) {
 			snprintf(path, sizeof path, "/media/%s", at[i]);
 			if (!mounted(path))
@@ -710,8 +755,8 @@ static void draw_system(void)
 	text(12, y, WHITE, 1, b);
 	y += 14;
 	textf(12, y, WHITE, 1, "CARDS: SLOT 0 %s, SLOT 1 %s   DISC: %s",
-	      access("/sys/block/rnsesd0", F_OK) ? "-" : "IN",
-	      access("/sys/block/rnsesd1", F_OK) ? "-" : "IN", disc_in() ? "IN" : "-");
+	      card_present(0) ? "IN" : "-",
+	      card_present(1) ? "IN" : "-", disc_in() ? "IN" : "-");
 	y += 14;
 	textf(12, y, WHITE, 1, "RADIO PROCESSOR: %s", radio_ok ? "ANSWERS" : "SILENT");
 }

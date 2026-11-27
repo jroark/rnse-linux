@@ -66,7 +66,18 @@
 #define IRR_OVERRUN	BIT(9)
 
 #define RX_MB	0
-#define TX_MB	1
+#ifdef CONFIG_SH_RNSE193
+/* Mailbox 1 belongs to the CAN console throughout Linux. */
+#define TX_MB 2
+#define ID_SHIFT 2
+#define MB_CONTROL 0x10
+#define MB_MASK 4
+#else
+#define TX_MB 1
+#define ID_SHIFT 4
+#define MB_CONTROL 4
+#define MB_MASK 0x10
+#endif
 
 #define PORT_A		0x12a00001	/* bits 3, 2: the transceiver awake */
 #define TX_GIVE_UP_MS	100
@@ -91,7 +102,10 @@ static u16 rd(struct rnse_can *p, int r)
 
 static void wr(struct rnse_can *p, int r, u16 v)
 {
-	__raw_writew(v, p->base + r);
+	if (IS_ENABLED(CONFIG_SH_RNSE193) && (r == TXPR0 || r == TXCR0))
+		__raw_writel(v, p->base + r - 2);
+	else
+		__raw_writew(v, p->base + r);
 }
 
 static const struct can_bittiming_const rnse_can_bittiming = {
@@ -143,8 +157,8 @@ static void rx_one(struct rnse_can *p)
 		wr(p, RXPR0, BIT(RX_MB));
 		return;
 	}
-	cf->can_id = rd(p, MB(RX_MB)) >> 4 & CAN_SFF_MASK;
-	len = rd(p, MB(RX_MB) + 4) & 0xf;
+	cf->can_id = rd(p, MB(RX_MB)) >> ID_SHIFT & CAN_SFF_MASK;
+	len = rd(p, MB(RX_MB) + MB_CONTROL) & 0xf;
 	cf->len = len > 8 ? 8 : len;
 	for (i = 0; i < cf->len; i++)
 		cf->data[i] = __raw_readb(p->base + MB(RX_MB) + 8 + i);
@@ -232,11 +246,11 @@ static netdev_tx_t rnse_can_start_xmit(struct sk_buff *skb, struct net_device *d
 	}
 	netif_stop_queue(dev);
 	spin_lock_irqsave(&p->lock, flags);
-	wr(p, MB(TX_MB), (cf->can_id & CAN_SFF_MASK) << 4);
+	wr(p, MB(TX_MB), (cf->can_id & CAN_SFF_MASK) << ID_SHIFT);
 	wr(p, MB(TX_MB) + 2, 0);
 	for (i = 0; i < cf->len; i++)
 		__raw_writeb(cf->data[i], p->base + MB(TX_MB) + 8 + i);
-	wr(p, MB(TX_MB) + 4, 0x2000 | cf->len);
+	wr(p, MB(TX_MB) + MB_CONTROL, 0x2000 | cf->len);
 	can_put_echo_skb(skb, dev, 0, 0);
 	p->cancelling = false;
 	mod_timer(&p->tx_timer, jiffies + msecs_to_jiffies(TX_GIVE_UP_MS));
@@ -250,13 +264,15 @@ static void mailboxes(struct rnse_can *p)
 	int n, i;
 
 	for (n = 0; n < 32; n++) {
+		if (IS_ENABLED(CONFIG_SH_RNSE193) && n == 1)
+			continue;
 		for (i = 0; i < 0x14; i += 2)
 			wr(p, MB(n) + i, 0);
-		wr(p, MB(n) + 4, 0x0700);	/* not in use */
+		wr(p, MB(n) + MB_CONTROL, 0x0700);	/* not in use */
 	}
-	wr(p, MB(RX_MB) + 4, 0x2300);		/* receives, new over unread */
-	wr(p, MB(RX_MB) + 0x10, 0x7ff0);	/* whatever the identifier */
-	wr(p, MB(TX_MB) + 4, 0x2000);		/* sends */
+	wr(p, MB(RX_MB) + MB_CONTROL, 0x2300);		/* receives, new over unread */
+	wr(p, MB(RX_MB) + MB_MASK, CAN_SFF_MASK << ID_SHIFT);	/* whatever the identifier */
+	wr(p, MB(TX_MB) + MB_CONTROL, 0x2000);		/* sends */
 }
 
 static int rnse_can_open(struct net_device *dev)
@@ -270,12 +286,12 @@ static int rnse_can_open(struct net_device *dev)
 	if (r)
 		return r;
 	spin_lock_irqsave(&p->lock, flags);
-	wr(p, MCR, 0);			/* run */
+	wr(p, MCR, IS_ENABLED(CONFIG_SH_RNSE193) ? 0x8000 : 0);			/* run */
 	mailboxes(p);
 	set_timing(p);
 	wr(p, IRR, 0x0001);		/* reset flag taken back */
-	wr(p, TXACK0, 0xffff);
-	wr(p, ABACK0, 0xffff);
+	wr(p, TXACK0, BIT(TX_MB));
+	wr(p, ABACK0, BIT(TX_MB));
 	wr(p, UMSR0, 0xffff);
 	wr(p, MBIMR1, 0xffff);
 	wr(p, MBIMR0, (u16)~(BIT(RX_MB) | BIT(TX_MB)));
@@ -284,7 +300,7 @@ static int rnse_can_open(struct net_device *dev)
 
 	/* The transceiver awake, as the loader and the stock software
 	 * set it: nothing gets out of a sleeping one. */
-	porta = ioremap(PORT_A, 1);
+	porta = IS_ENABLED(CONFIG_SH_RNSE193) ? NULL : ioremap(PORT_A, 1);
 	if (porta) {
 		__raw_writeb(__raw_readb(porta) | 0x0c, porta);
 		iounmap(porta);
@@ -379,7 +395,7 @@ static int rnse_can_probe(struct platform_device *pdev)
 	dev->netdev_ops = &rnse_can_ops;
 	dev->flags |= IFF_ECHO;
 	/* A quantum is two clock periods times the prescaler. */
-	p->can.clock.freq = 58800000 / 2;
+	p->can.clock.freq = (IS_ENABLED(CONFIG_SH_RNSE193) ? 50400000 : 58800000) / 2;
 	p->can.bittiming_const = &rnse_can_bittiming;
 	p->can.do_set_mode = rnse_can_set_mode;
 	p->can.do_get_berr_counter = rnse_can_berr;
@@ -391,8 +407,14 @@ static int rnse_can_probe(struct platform_device *pdev)
 	bt->phase_seg1 = 8;
 	bt->phase_seg2 = 4;
 	bt->sjw = 1;
+	if (IS_ENABLED(CONFIG_SH_RNSE193)) {
+		bt->brp = 12;
+		bt->prop_seg = bt->phase_seg1 = 6;
+		bt->phase_seg2 = 8;
+		bt->sjw = 4;
+	}
 	bt->tq = 1000000000UL / (p->can.clock.freq / bt->brp);
-	bt->sample_point = 800;
+	bt->sample_point = (1 + bt->prop_seg + bt->phase_seg1) * 1000 / 21;
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	platform_set_drvdata(pdev, dev);
 	r = register_candev(dev);

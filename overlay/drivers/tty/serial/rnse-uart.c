@@ -54,7 +54,7 @@
 #define S_ERRORS	(BIT(5) | BIT(4) | BIT(3))
 #define S_TXEND		BIT(2)
 
-#define CLOCK	14700000
+#define CLOCK	(IS_ENABLED(CONFIG_SH_RNSE193) ? 12462000 : 14700000)
 #define NR	6
 
 static struct uart_driver rnse_uart_driver;
@@ -62,11 +62,23 @@ static struct uart_port ports[NR];
 
 static u16 rd(struct uart_port *p, int r)
 {
+	if (IS_ENABLED(CONFIG_SH_RNSE193)) {
+		if (r == RDR)
+			return __raw_readb(p->membase + 2 * r);
+		r *= 2;
+	}
 	return __raw_readw(p->membase + r);
 }
 
 static void wr(struct uart_port *p, int r, u16 v)
 {
+	if (IS_ENABLED(CONFIG_SH_RNSE193)) {
+		r *= 2;
+		if (r == 2 * TDR) {
+			__raw_writeb(v, p->membase + r);
+			return;
+		}
+	}
 	__raw_writew(v, p->membase + r);
 }
 
@@ -259,7 +271,7 @@ int rnse_radio_send(const u8 *buf, int n)
 {
 	struct uart_port *p = &ports[1];
 	unsigned long flags, end;
-	int i;
+	int i, wait;
 
 	if (!p->membase)
 		return -ENODEV;
@@ -272,9 +284,14 @@ int rnse_radio_send(const u8 *buf, int n)
 	wr(p, STATUS, rd(p, STATUS) & ~S_ERRORS);
 	ctrl(p, C_TXI | C_TEI, C_TE);
 	for (i = 0; i < n; i++) {
-		end = jiffies + msecs_to_jiffies(20);
-		while ((rd(p, STATUS) & S_TXFULL) && time_before(jiffies, end))
+		/* jiffies cannot advance with local interrupts disabled. */
+		for (wait = 0; wait < 2000 && (rd(p, STATUS) & S_TXFULL); wait++)
 			udelay(10);
+		if (wait == 2000) {
+			ctrl(p, C_TE | C_TEI, 0);
+			uart_port_unlock_irqrestore(p, flags);
+			return -ETIMEDOUT;
+		}
 		wr(p, TDR, buf[i]);
 	}
 	uart_port_unlock_irqrestore(p, flags);

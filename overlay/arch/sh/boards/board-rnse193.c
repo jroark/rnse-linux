@@ -35,6 +35,7 @@
 #include <linux/platform_data/simplefb.h>
 #include <linux/memblock.h>
 #include <asm/machvec.h>
+#include <linux/sh_intc.h>
 
 #define RNSE193_WATCHDOG	0xffc44008	/* bit 0: the strobe */
 
@@ -178,8 +179,40 @@ static struct platform_device fb_device = {
 	.dev.platform_data = &fb_data,
 };
 
+static struct resource ata_resources[] = {
+	DEFINE_RES_MEM(0xffc62100, 0xc0),
+};
+
+static struct platform_device ata_device = {
+	.name = "pata-rnse", .id = -1,
+	.resource = ata_resources, .num_resources = ARRAY_SIZE(ata_resources),
+};
+
+static struct resource can_resources[] = {
+	DEFINE_RES_MEM(0xffdf0000, 0x500),
+	DEFINE_RES_IRQ(evt2irq(0x880)),
+};
+
+static struct platform_device can_device = {
+	.name = "rnse-hcan2", .id = -1,
+	.resource = can_resources, .num_resources = ARRAY_SIZE(can_resources),
+};
+
+static struct resource uart_resources[] = {
+	DEFINE_RES_MEM(0xff915000, 0x20),
+	DEFINE_RES_IRQ(evt2irq(0xd20)),
+};
+
+static struct platform_device uart_device = {
+	.name = "rnse-uart", .id = 1,
+	.resource = uart_resources, .num_resources = ARRAY_SIZE(uart_resources),
+};
+
 static struct platform_device *rnse193_devices[] __initdata = {
 	&fb_device,
+	&ata_device,
+	&can_device,
+	&uart_device,
 };
 
 static int __init rnse193_devices_setup(void)
